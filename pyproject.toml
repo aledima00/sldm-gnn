@@ -8,7 +8,40 @@ dependencies = [
     "numpy>=2.3.4",
     "pandas>=2.3.3",
     "pyarrow>=22.0.0",
-    "torch>=2.9.0",
+    "torch==2.8.0",
     "torch-geometric>=2.7.0",
-    "torchvision>=0.24.0",
+    "torchvision==0.23.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pyg-torch280-cu128"
+url = "https://data.pyg.org/whl/torch-2.8.0+cu128.html"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128" },
+]
+torchvision = [
+    { index = "pytorch-cu128" },
+]
+pyg_lib = [
+    { index = "pyg-torch280-cu128" },
+]
+torch_scatter = [
+    { index = "pyg-torch280-cu128" },
+]
+torch_sparse = [
+    { index = "pyg-torch280-cu128" },
+]
+torch_cluster = [
+    { index = "pyg-torch280-cu128" },
+]
+torch_spline_conv = [
+    { index = "pyg-torch280-cu128" },
 ]
