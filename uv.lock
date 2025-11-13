@@ -901,6 +901,7 @@ name = "sldm-gnn"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "colorama" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -912,6 +913,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "colorama", specifier = ">=0.4.6" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pyarrow", specifier = ">=22.0.0" },
