@@ -1,15 +1,20 @@
 import torch as _tch
 from torch_geometric.data import Data as _GData, Dataset as _GDataset
+from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr, GlobalStorage
 import pandas as _pd
 from pathlib import Path as _Path
 from tqdm.auto import tqdm as _tqdm
+from torch.serialization import safe_globals
 
 class MapGraph(_GDataset):
-    def __init__(self, path:_Path, transform=None,*,frames_num:int=20,m_radius:float=10.0,labelspath:_Path=None,n_labels:int=None):
+    def __init__(self, path:_Path, transform=None,*,frames_num:int=20,m_radius:float=10.0,labelspath:_Path=None,n_labels:int=None,tqdm_pos:int=-1,gCacheEnabled=True):
         super().__init__()
         self.transform = transform
         self.frames_num = frames_num
         self.m_radius = m_radius
+        self.tqdm_pos = tqdm_pos
+        self.gpath = path.parent.resolve() / 'graphs'
+        self.gCacheEnabled = gCacheEnabled
         if labelspath is not None:
             self.labels_df = _pd.read_csv(labelspath, dtype={'PackId': 'uint32', 'MLBEncoded': 'uint16'},skipinitialspace=True)
             if n_labels is None:
@@ -48,15 +53,25 @@ class MapGraph(_GDataset):
         return len(self.pack_ids)
     def __getitem__(self, idx):
         pack_id = self.pack_ids[idx]
-        return self.pack_to_graph(pack_id)
+        torch_save_path = (self.gpath / f"graph_{idx:04d}.pt").resolve()
+        if self.gCacheEnabled and torch_save_path.exists():
+            with safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage]):
+                graph = _tch.load(torch_save_path)
+        else:
+            graph = self.pack_to_graph(pack_id)
+            if self.gCacheEnabled:
+                _tch.save(graph, torch_save_path)
+        return graph
     
     def pack_to_graph(self, pack_id:int):
         pack_df = self.df[self.df['PackId'] == pack_id].drop(columns=['PackId'])
         pack_df['stType'] = pack_df['stType'].astype('long')
         pack_df = pack_df.sort_values(['VehicleId','FrameId'])
         fnames = ['X','Y','Speed','Angle','PresenceFlag','stType']
-        base_feats = pack_df[fnames].to_numpy().reshape(-1, 20, 6)
-        temporal_feats = base_feats.reshape(-1, 20*6)
+        raw_feats = pack_df[fnames].to_numpy().reshape(-1, 20, 6)
+        static_feats = raw_feats[:,:,:5]
+        st_types_feats = _tch.tensor(raw_feats[:,0,5:], dtype=_tch.long)  # vehicle stType repeated for all frames   
+        temporal_feats = static_feats.reshape(-1, 20*5)
 
         x = _tch.tensor(temporal_feats, dtype=_tch.float)
 
@@ -68,7 +83,7 @@ class MapGraph(_GDataset):
         vehicle_ids = coords['VehicleId'].unique()
         edge_index_list = []
         edge_attr_list = []
-        for i, vid1 in _tqdm(enumerate(vehicle_ids), total=len(vehicle_ids), desc=f"Building edges for PackId {pack_id}"):
+        for i, vid1 in _tqdm(enumerate(vehicle_ids), total=len(vehicle_ids), desc=f"Building edges for PackId {pack_id}",position=self.tqdm_pos if self.tqdm_pos >= 0 else 0, leave=False, disable=self.tqdm_pos < 0):
             traj1 = _tch.tensor(coords[coords['VehicleId'] == vid1].sort_values('FrameId')[['X','Y']].to_numpy())
             for j, vid2 in enumerate(vehicle_ids):
                 if i != j:
@@ -84,7 +99,7 @@ class MapGraph(_GDataset):
         edge_attr = _tch.tensor(edge_attr_list, dtype=_tch.float)
 
         if not hasattr(self, 'labels_df'):
-            return _GData(x=x, edge_index=edge_index, edge_attr=edge_attr)
+            return _GData(x=x, st_types_feats=st_types_feats, edge_index=edge_index, edge_attr=edge_attr)
         else:
             # finally, if labels are available, expand them as graph-level multi-label
             labels_row = self.labels_df[self.labels_df['PackId'] == pack_id]
@@ -97,4 +112,17 @@ class MapGraph(_GDataset):
                 if (labels >> c) & 1:
                     y[c] = 1.0 
             # return graph data object
-            return _GData(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
+            return _GData(x=x, st_types_feats=st_types_feats, edge_index=edge_index, edge_attr=edge_attr, y=y)
+        
+    def save(self,*,tqdm_pos:int=-1):
+        """
+        Loops through the dataset and saves pre-computed graphs to the specified path.
+        """
+        path = self.gpath.resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        for i in _tqdm(range(len(self)), desc="Saving graphs", position=tqdm_pos if tqdm_pos >= 0 else 0, leave=True, disable=tqdm_pos < 0):
+            torch_save_path = (path / f"graph_{i:04d}.pt").resolve()
+            if not torch_save_path.exists():
+                # skip already existing graphs
+                graph = self[i]
+                _tch.save(graph, torch_save_path)
