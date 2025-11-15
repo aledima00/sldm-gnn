@@ -17,9 +17,3 @@ def getMlbNames(encoded_mlb:int)->set[str]:
         if (encoded_mlb & (1 << label.value)) != 0:
             labels.add(label.name)
     return labels
-
-def getLbName(label_idx:int)->str:
-    try:
-        return LabelsEnum(label_idx).name
-    except ValueError:
-        return "UNKNOWN_LABEL"
