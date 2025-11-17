@@ -16,11 +16,10 @@ colorama.init(autoreset=True)
 RADIUS_EDGE_CONN = 20
 
 # data description
-MLB_LABELS_NUM = 9
 EMB_DIM = 12
 NUM_POSSIBLE_STATION_TYPES = 256
-NUM_STATIC_FEATURES = 5
-NUM_EMBEDDED_FEATURES = 1
+NUM_TEMPORAL_FEATURES = 5
+# NUM_STATIC_FEATURES = 3
 FRAMES_PER_PACK = 20
 
 # learning parameters
@@ -31,7 +30,7 @@ WEIGHT_DECAY = 2e-4
 ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # gnn parameters
-IN_DIM = FRAMES_PER_PACK * NUM_STATIC_FEATURES  # 20 frames, each
+IN_DIM = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  # 20 frames, each
 HIDDEN_DIMS = [128, 128]
 
 # device
@@ -131,16 +130,14 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
                     tprint(f'label "{getLbName(i)}" -> {acc:.4f}')
 
 @click.command()
-@click.option('-X', '--xpath', 'xpath', type=click.Path(exists=True), default=None, help='Path to the input (X) dataset file.', required=True)
-@click.option('-Y', '--ypath', 'ypath', type=click.Path(exists=True), default=None, help='Path to the labels (Y) file.', required=True)
-@click.option('-v', '--verbose', is_flag=True, help='Enable verbose output.')
-@click.option('-b', '--build-only', is_flag=True, help='Only build and save the graphs from the raw dataset without training the model.')
-@click.option('-r', '--rebuild', is_flag=True, help='Rebuild the dataset graphs even if they already exist on disk.')
-def main(xpath, ypath, verbose, build_only, rebuild):
+@click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
+@click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
+@click.option('-b', '--build-only', is_flag=True, default=False, help='Only build and save the graphs from the raw dataset without training the model.')
+@click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
+def main(dirpath, verbose, build_only, rebuild):
     # load data
-    xp = Path(xpath).resolve()
-    yp = Path(ypath).resolve()
-    ds = MapGraph(xp, labelspath=yp, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild)
+    dpath = Path(dirpath).resolve()
+    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
     ds.save(tqdm=True)
