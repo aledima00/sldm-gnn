@@ -7,8 +7,29 @@ from pathlib import Path as _Path
 from tqdm.auto import tqdm as _tqdm
 from torch.serialization import safe_globals
 
+def rescalePositionsByDims(features:_tch.Tensor)->_tch.Tensor:
+    """
+    Rescales the (X,Y) coordinates in the graph data based on the vehicle dimensions (width, length) and on the angle.
+    Assuming original coordinates are taken from the center of the front border of the vehicle box,
+    new coordinates will be in the center of the vehicle box.
+    """
+    x = features.clone()
+    xs = x[:,0]
+    ys = x[:,1]
+    # x[:,2] is speed
+    angles = x[:,3]
+    # x[:,4] is PresenceFlag
+    # widths = x[:, 5] # unused
+    lengths = x[:, 6]
+
+    # apply offsets
+    x[:,0] = xs - (lengths / 2) * _tch.cos(angles)
+    x[:,1] = ys - (lengths / 2) * _tch.sin(angles)
+
+    return x
+
 class MapGraph(_GDataset):
-    def __init__(self, dirpath:_Path, transform=None,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False):
+    def __init__(self, dirpath:_Path, transform=None,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False,rescaleXYByDims:bool=False):
         super().__init__()
         self.transform = transform
         self.frames_num = frames_num
@@ -17,6 +38,7 @@ class MapGraph(_GDataset):
         self.gpath = self.dirpath / 'graphs'
         self.gCacheEnabled = gCacheEnabled
         self.rebuild = rebuild
+        self.rescaleXYByDims = rescaleXYByDims
 
         xpath = self.dirpath / 'packs.parquet'
         ypath = self.dirpath / 'labels.parquet'
@@ -74,6 +96,9 @@ class MapGraph(_GDataset):
         # load vinfo df if available
         if vpath.exists() and vpath.is_file():
             self.vinfo_df = _pd.read_parquet(vpath).astype({'VehicleId':'string', 'width':'float32', 'length':'float32', 'stType':'uint8'})
+            # set NaN w/l to 0.0
+            self.vinfo_df['width'] = self.vinfo_df['width'].fillna(0.0)
+            self.vinfo_df['length'] = self.vinfo_df['length'].fillna(0.0)
             print(f"Loaded vehicle info ({len(self.vinfo_df)}), like:\n{self.vinfo_df.head(3)}\nof types:\n{self.vinfo_df.dtypes.to_dict()}")
     
     def __len__(self):
@@ -116,6 +141,8 @@ class MapGraph(_GDataset):
 
         # x tensor: concat temporal and dim features
         x = _tch.tensor(_np.concatenate([temporal_feats, dims_feats], axis=1), dtype=_tch.float)
+        if self.rescaleXYByDims:
+            x = rescalePositionsByDims(x)
 
         # edge index construction based on distance of trajectories
         ## min distance used for threshold

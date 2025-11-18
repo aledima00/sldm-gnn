@@ -4,6 +4,7 @@ from torch_geometric.loader import DataLoader as GDL
 from pathlib import Path
 from src.dataset import MapGraph
 from src.sage import GraphSAGEGraphLevel
+from src.gat import GATGraphLevel
 import colorama
 from colorama import Fore, Back, Style
 import numpy as np
@@ -19,7 +20,7 @@ RADIUS_EDGE_CONN = 20
 EMB_DIM = 12
 NUM_POSSIBLE_STATION_TYPES = 256
 NUM_TEMPORAL_FEATURES = 5
-# NUM_STATIC_FEATURES = 3
+NUM_STATIC_FEATURES = 2
 FRAMES_PER_PACK = 20
 
 # learning parameters
@@ -30,8 +31,10 @@ WEIGHT_DECAY = 2e-4
 ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # gnn parameters
-IN_DIM = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  # 20 frames, each
+IN_DIM = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + NUM_STATIC_FEATURES
 HIDDEN_DIMS = [128, 128]
+# only for GAT
+ATTENTION_HEADS = 8
 
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -131,13 +134,15 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
 
 @click.command()
 @click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
-@click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
+@click.option('--scale-by-dims', is_flag=True, default=False, help='Rescale the positional features by the vehicle dimensions (width and length).')
 @click.option('-b', '--build-only', is_flag=True, default=False, help='Only build and save the graphs from the raw dataset without training the model.')
 @click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
-def main(dirpath, verbose, build_only, rebuild):
+@click.option('-M','--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
+@click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
+def main(dirpath, verbose, build_only, rebuild, scale_by_dims, model):
     # load data
     dpath = Path(dirpath).resolve()
-    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild)
+    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, rescaleXYByDims=scale_by_dims)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
     ds.save(tqdm=True)
@@ -154,7 +159,15 @@ def main(dirpath, verbose, build_only, rebuild):
     dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
     dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=False)
 
-    model = GraphSAGEGraphLevel(in_dim=IN_DIM, hidden_dims=HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
+    match model:
+        case 'sage':
+            print(f"{Fore.CYAN}Using GraphSAGE model.{Style.RESET_ALL}")
+            model = GraphSAGEGraphLevel(in_dim=IN_DIM, hidden_dims=HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
+        case 'gat':
+            print(f"{Fore.CYAN}Using GAT model.{Style.RESET_ALL}")
+            model = GATGraphLevel(in_dim=IN_DIM, hidden_dims=HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
+        case _:
+            raise ValueError(f"Unknown model type: {model}")
     train_model(model,dl_train,dl_eval,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY,device=DEVICE,verbose=verbose)
 
 
