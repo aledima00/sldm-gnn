@@ -6,8 +6,9 @@ import pandas as _pd
 from pathlib import Path as _Path
 from tqdm.auto import tqdm as _tqdm
 from torch.serialization import safe_globals
+from typing import Literal as _Lit
 
-def rescalePositionsByDims(features:_tch.Tensor)->_tch.Tensor:
+def rescaleToCenter(features:_tch.Tensor)->_tch.Tensor:
     """
     Rescales the (X,Y) coordinates in the graph data based on the vehicle dimensions (width, length) and on the angle.
     Assuming original coordinates are taken from the center of the front border of the vehicle box,
@@ -29,7 +30,8 @@ def rescalePositionsByDims(features:_tch.Tensor)->_tch.Tensor:
     return x
 
 class MapGraph(_GDataset):
-    def __init__(self, dirpath:_Path,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False,rescaleXYByDims:bool=False,use_dims_features:bool=True):
+    pos_rescaling_opt_type = _Lit['none', 'center']
+    def __init__(self, dirpath:_Path,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False,pos_rescaling:pos_rescaling_opt_type='center',use_dims_features:bool=True):
         super().__init__()
         self.frames_num = frames_num
         self.m_radius = m_radius
@@ -37,7 +39,7 @@ class MapGraph(_GDataset):
         self.gpath = self.dirpath / 'graphs'
         self.gCacheEnabled = gCacheEnabled
         self.rebuild = rebuild
-        self.rescaleXYByDims = rescaleXYByDims
+        self.pos_rescaling = pos_rescaling
         self.use_dims_features = use_dims_features
 
         xpath = self.dirpath / 'packs.parquet'
@@ -146,8 +148,13 @@ class MapGraph(_GDataset):
 
         # x tensor: concat temporal and dim features
         x = _tch.tensor(_np.concatenate([temporal_feats, dims_feats], axis=1), dtype=_tch.float)
-        if self.rescaleXYByDims:
-            x = rescalePositionsByDims(x)
+        match self.pos_rescaling:
+            case 'center':
+                x = rescaleToCenter(x)
+            case 'none':
+                pass
+            case _:
+                raise ValueError(f"Unknown pos_rescaling option: {self.pos_rescaling}")
 
         # edge index construction based on distance of trajectories
         ## min distance used for threshold

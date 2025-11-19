@@ -135,16 +135,16 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
 @click.command()
 @click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
 @click.option('--no-dims-features', is_flag=True, default=False, help='Do not include vehicle dimensions (width and length) in the node features.')
-@click.option('-s', '--scale-by-dims', is_flag=True, default=False, help='Rescale the positional features by the vehicle dimensions (width and length).')
+@click.option('-P','--pos-rescaling', type=click.Choice(MapGraph.pos_rescaling_opt_type.__args__), default='center', help='Position rescaling option to apply to node features. Default is "center".')
 @click.option('-b', '--build-only', is_flag=True, default=False, help='Only build and save the graphs from the raw dataset without training the model.')
 @click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
-@click.option('-m','--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
+@click.option('-m', '--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
 @click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
-def main(dirpath, verbose, build_only, rebuild, scale_by_dims, model, no_dims_features):
+def main(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_features):
     in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + (0 if no_dims_features else NUM_STATIC_FEATURES)
     # load data
     dpath = Path(dirpath).resolve()
-    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, rescaleXYByDims=scale_by_dims, use_dims_features=not no_dims_features)
+    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, pos_rescaling=pos_rescaling, use_dims_features=not no_dims_features)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
     ds.save(tqdm=True)
