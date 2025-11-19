@@ -31,10 +31,10 @@ WEIGHT_DECAY = 2e-4
 ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # gnn parameters
-IN_DIM = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + NUM_STATIC_FEATURES
-HIDDEN_DIMS = [128, 128]
+SAGE_HIDDEN_DIMS = [256, 128, 64, 32, 16]
+GAT_HIDDEN_DIMS = [128, 128]
 # only for GAT
-ATTENTION_HEADS = 8
+GAT_ATTENTION_HEADS = 8
 
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -52,11 +52,11 @@ def split_tr_ev_3to1(dataset:MapGraph)->tuple[MapGraph,MapGraph]:
     train_ds, val_ds = random_split(dataset, [train_len, val_len])
     return train_ds, val_ds
 
-def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False):
+def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, disable_print:bool=False):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = torch.nn.BCEWithLogitsLoss()
-    tprint = TabPrint(tab="   ")
+    tprint = TabPrint(tab="   ", enabled=not disable_print)
 
     act_labels_num = len(ACTIVE_LABELS)
 
@@ -134,15 +134,17 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
 
 @click.command()
 @click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
-@click.option('--scale-by-dims', is_flag=True, default=False, help='Rescale the positional features by the vehicle dimensions (width and length).')
+@click.option('--no-dims-features', is_flag=True, default=False, help='Do not include vehicle dimensions (width and length) in the node features.')
+@click.option('-s', '--scale-by-dims', is_flag=True, default=False, help='Rescale the positional features by the vehicle dimensions (width and length).')
 @click.option('-b', '--build-only', is_flag=True, default=False, help='Only build and save the graphs from the raw dataset without training the model.')
 @click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
-@click.option('-M','--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
+@click.option('-m','--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
 @click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
-def main(dirpath, verbose, build_only, rebuild, scale_by_dims, model):
+def main(dirpath, verbose, build_only, rebuild, scale_by_dims, model, no_dims_features):
+    in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + (0 if no_dims_features else NUM_STATIC_FEATURES)
     # load data
     dpath = Path(dirpath).resolve()
-    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, rescaleXYByDims=scale_by_dims)
+    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, rescaleXYByDims=scale_by_dims, use_dims_features=not no_dims_features)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
     ds.save(tqdm=True)
@@ -162,10 +164,10 @@ def main(dirpath, verbose, build_only, rebuild, scale_by_dims, model):
     match model:
         case 'sage':
             print(f"{Fore.CYAN}Using GraphSAGE model.{Style.RESET_ALL}")
-            model = GraphSAGEGraphLevel(in_dim=IN_DIM, hidden_dims=HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
+            model = GraphSAGEGraphLevel(in_dim=in_dim, hidden_dims=SAGE_HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
         case 'gat':
             print(f"{Fore.CYAN}Using GAT model.{Style.RESET_ALL}")
-            model = GATGraphLevel(in_dim=IN_DIM, hidden_dims=HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
+            model = GATGraphLevel(in_dim=in_dim, hidden_dims=GAT_HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
         case _:
             raise ValueError(f"Unknown model type: {model}")
     train_model(model,dl_train,dl_eval,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY,device=DEVICE,verbose=verbose)

@@ -29,9 +29,8 @@ def rescalePositionsByDims(features:_tch.Tensor)->_tch.Tensor:
     return x
 
 class MapGraph(_GDataset):
-    def __init__(self, dirpath:_Path, transform=None,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False,rescaleXYByDims:bool=False):
+    def __init__(self, dirpath:_Path,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None, gCacheEnabled=True,rebuild:bool=False,rescaleXYByDims:bool=False,use_dims_features:bool=True):
         super().__init__()
-        self.transform = transform
         self.frames_num = frames_num
         self.m_radius = m_radius
         self.dirpath = dirpath.resolve()
@@ -39,6 +38,7 @@ class MapGraph(_GDataset):
         self.gCacheEnabled = gCacheEnabled
         self.rebuild = rebuild
         self.rescaleXYByDims = rescaleXYByDims
+        self.use_dims_features = use_dims_features
 
         xpath = self.dirpath / 'packs.parquet'
         ypath = self.dirpath / 'labels.parquet'
@@ -103,7 +103,7 @@ class MapGraph(_GDataset):
     
     def __len__(self):
         return len(self.pack_ids)
-    def __getitem__(self, idx):
+    def __inner_getitem(self, idx, use_dims_features:bool=True):
         pack_id = self.pack_ids[idx]
         torch_save_path = (self.gpath / f"graph_{idx:04d}.pt").resolve()
         if self.gCacheEnabled and torch_save_path.exists() and not self.rebuild:
@@ -124,7 +124,12 @@ class MapGraph(_GDataset):
             graph = self.pack_to_graph(pack_id)
             if self.gCacheEnabled:
                 _tch.save(graph, torch_save_path)
+        if not use_dims_features:
+            graph.x = graph.x[:,:-2]  # remove the last two columns which correspond to dims features
         return graph
+    
+    def __getitem__(self, idx):
+        return self.__inner_getitem(idx, use_dims_features=self.use_dims_features)
     
     def pack_to_graph(self, pack_id:int):
         pack_df = self.df[self.df['PackId'] == pack_id].drop(columns=['PackId'])
@@ -199,5 +204,5 @@ class MapGraph(_GDataset):
             torch_save_path = (path / f"graph_{i:04d}.pt").resolve()
             if self.rebuild or not torch_save_path.exists():
                 # skip already existing graphs
-                graph = self[i]
+                graph = self.__inner_getitem(i, use_dims_features=True)
                 _tch.save(graph, torch_save_path)
