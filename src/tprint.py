@@ -1,16 +1,19 @@
 from pathlib import Path as _Path
 class TabPrint:
-    def __init__(self, tab:str="  ", tabval:int=1,*,file:_Path=None):
+    def __init__(self, tab:str="  ", tabval:int=1,*,file:_Path=None,enabled:bool=True):
         self.__indt = 0
         self.__tab = tab
         self.__tabval = tabval
         self.__tabctx = self._TabContext(self)
         self.__file = file
+        self.__enabled = enabled
         if self.__file is not None:
             # Clear the file at the start
             with open(self.__file, 'w') as f:
                 pass
     def print(self, *args, **kwargs):
+        if not self.__enabled:
+            return
         newargs = [self.__tab * self.__indt * self.__tabval, *args] if self.__indt > 0 else args
         if self.__file is None:
             print(*newargs, **kwargs)
