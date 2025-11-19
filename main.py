@@ -10,6 +10,8 @@ from colorama import Fore, Back, Style
 import numpy as np
 from src.labels import LabelsEnum
 from src.tprint import TabPrint
+from typing import Literal as Lit
+from tqdm.auto import tqdm
 import click
 colorama.init(autoreset=True)
 
@@ -39,9 +41,9 @@ GAT_ATTENTION_HEADS = 8
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def getLbName(label_idx:int)->str:
+def getLbName(label_idx:int,active_labels)->str:
     try:
-        return LabelsEnum(ACTIVE_LABELS[label_idx]).name
+        return LabelsEnum(active_labels[label_idx]).name
     except ValueError:
         return "UNKNOWN_LABEL"
 
@@ -52,15 +54,17 @@ def split_tr_ev_3to1(dataset:MapGraph)->tuple[MapGraph,MapGraph]:
     train_ds, val_ds = random_split(dataset, [train_len, val_len])
     return train_ds, val_ds
 
-def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, disable_print:bool=False):
+Progress_logging_options = Lit['clilog', 'tqdm', 'none']
+
+def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = torch.nn.BCEWithLogitsLoss()
-    tprint = TabPrint(tab="   ", enabled=not disable_print)
+    tprint = TabPrint(tab="   ", enabled=(progress_logging=='clilog'))
 
     act_labels_num = len(ACTIVE_LABELS)
 
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs), desc="Training Epochs", disable=(progress_logging!='tqdm')):
         tprint(f"\n{Back.CYAN}{Fore.YELLOW} ---------- Epoch {epoch+1}/{epochs} ---------- {Style.RESET_ALL}")
         with tprint.tab:
             tprint(f"{Fore.YELLOW}{Style.BRIGHT}--> Training...   {Style.RESET_ALL}")
@@ -98,7 +102,7 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
                 tprint(f"Per-Label Training Accuracy:")
                 with tprint.tab:
                     for i, acc in enumerate(per_label_train_acc):
-                        tprint(f'label "{getLbName(i)}" -> {acc:.4f}')
+                        tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
 
             # Evaluation
             tprint(f"{Fore.YELLOW}{Style.BRIGHT}--> Validating ...   {Style.RESET_ALL}")
@@ -130,7 +134,7 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
             tprint(f"Per-Label Eval Accuracy:")
             with tprint.tab:
                 for i, acc in enumerate(per_label_val_acc):
-                    tprint(f'label "{getLbName(i)}" -> {acc:.4f}')
+                    tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
 
 @click.command()
 @click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
@@ -140,11 +144,12 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
 @click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
 @click.option('-m', '--model', type=click.Choice( ['sage','gat']), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
 @click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
-def main(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_features):
+@click.option('--progress-logging', type=click.Choice(Progress_logging_options.__args__), default='clilog', help='Choice for visualization of progress in training.')
+def main(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_features, progress_logging, active_labels=ACTIVE_LABELS):
     in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + (0 if no_dims_features else NUM_STATIC_FEATURES)
     # load data
     dpath = Path(dirpath).resolve()
-    ds = MapGraph(dpath, active_labels=ACTIVE_LABELS, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, pos_rescaling=pos_rescaling, use_dims_features=not no_dims_features)
+    ds = MapGraph(dpath, active_labels=active_labels, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, pos_rescaling=pos_rescaling, use_dims_features=not no_dims_features)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
     ds.save(tqdm=True)
@@ -164,13 +169,13 @@ def main(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_fe
     match model:
         case 'sage':
             print(f"{Fore.CYAN}Using GraphSAGE model.{Style.RESET_ALL}")
-            model = GraphSAGEGraphLevel(in_dim=in_dim, hidden_dims=SAGE_HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
+            model = GraphSAGEGraphLevel(in_dim=in_dim, hidden_dims=SAGE_HIDDEN_DIMS, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
         case 'gat':
             print(f"{Fore.CYAN}Using GAT model.{Style.RESET_ALL}")
-            model = GATGraphLevel(in_dim=in_dim, hidden_dims=GAT_HIDDEN_DIMS, out_dim=len(ACTIVE_LABELS), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
+            model = GATGraphLevel(in_dim=in_dim, hidden_dims=GAT_HIDDEN_DIMS, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
         case _:
             raise ValueError(f"Unknown model type: {model}")
-    train_model(model,dl_train,dl_eval,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY,device=DEVICE,verbose=verbose)
+    train_model(model,dl_train,dl_eval,epochs=EPOCHS,lr=LR,weight_decay=WEIGHT_DECAY,device=DEVICE,verbose=verbose, progress_logging=progress_logging, active_labels=active_labels)
 
 
 if __name__ == "__main__":
