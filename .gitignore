@@ -1,3 +1,4 @@
 .vscode
 input
-output
+src/__pycache__
+out/
