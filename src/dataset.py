@@ -81,7 +81,7 @@ class MapGraph(_GDataset):
 
         self.df = _pd.concat([self.df, new_rows_df], ignore_index=True)
         self.pack_ids = self.df['PackId'].unique().tolist()
-        print(f"Loaded packs ({len(self.df)}), like:\n{self.df.head(3)}\nof types:\n{self.df.dtypes.to_dict()}")
+        #print(f"Loaded packs ({len(self.df)}), like:\n{self.df.head(3)}\nof types:\n{self.df.dtypes.to_dict()}")
 
         # load y df if available
         if ypath.exists() and ypath.is_file():
@@ -93,7 +93,7 @@ class MapGraph(_GDataset):
                     raise ValueError("active_labels must contain only non-negative integers")
             self.active_labels = active_labels
             self.labels_df = _pd.read_parquet(ypath).astype({'PackId':'uint32','MLBEncoded':'uint16'})
-            print(f"Loaded labels ({len(self.labels_df)}), like:\n{self.labels_df.head(3)}\nof types:\n{self.labels_df.dtypes.to_dict()}")
+            #print(f"Loaded labels ({len(self.labels_df)}), like:\n{self.labels_df.head(3)}\nof types:\n{self.labels_df.dtypes.to_dict()}")
 
         # load vinfo df if available
         if vpath.exists() and vpath.is_file():
@@ -101,7 +101,7 @@ class MapGraph(_GDataset):
             # set NaN w/l to 0.0
             self.vinfo_df['width'] = self.vinfo_df['width'].fillna(0.0)
             self.vinfo_df['length'] = self.vinfo_df['length'].fillna(0.0)
-            print(f"Loaded vehicle info ({len(self.vinfo_df)}), like:\n{self.vinfo_df.head(3)}\nof types:\n{self.vinfo_df.dtypes.to_dict()}")
+            #print(f"Loaded vehicle info ({len(self.vinfo_df)}), like:\n{self.vinfo_df.head(3)}\nof types:\n{self.vinfo_df.dtypes.to_dict()}")
     
     def __len__(self):
         return len(self.pack_ids)
