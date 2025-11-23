@@ -17,7 +17,7 @@ import click
 colorama.init(autoreset=True)
 
 # graph building parameters
-RADIUS_EDGE_CONN = 20
+RADIUS_EDGE_CONN = 40
 
 # data description
 EMB_DIM = 12
@@ -29,12 +29,12 @@ FRAMES_PER_PACK = 20
 # learning parameters
 DF_EPOCHS = 100
 DF_BATCH_SIZE = 32
-DF_LR = 1e-5
-DF_WEIGHT_DECAY = 5e-5
+DF_LR = 0.005
+DF_WEIGHT_DECAY = 5e-4
 DF_ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # gnn parameters
-SAGE_HIDDEN_DIMS = [256, 128, 64, 32, 16]
+SAGE_HIDDEN_DIMS = [128, 64]
 GAT_HIDDEN_DIMS = [128, 128]
 # only for GAT
 GAT_ATTENTION_HEADS = 8
@@ -266,6 +266,39 @@ def autorun():
     plt.savefig(outpath / f'overall_tot_acc_bs{bs}_lr{lr}_wd{wd}.png')
     plt.close(fig)
 
+def runlb(lnum:int):
+    path = Path(__file__).resolve().parent / 'input' / 'labels' / f'lb{lnum}'
+    outpath = Path(__file__).resolve().parent / 'out' / 'labels' / f'lb{lnum}'
+    plt_yticks = np.arange(-0.1, 1.2, 0.1)
+
+    lr = 5e-4
+    bs = 32
+    wd = 1e-5
+    epochs = 200
+
+    (_, tot_tracc),(_, tot_vacc) = rungnn(
+        path,
+        active_labels=[lnum], 
+        progress_logging='clilog',
+        save=False,
+        epochs=epochs,
+        lr=lr,
+        wd=wd,
+        bs=bs
+    )
+    fig = plt.figure()
+    plt.plot(tot_vacc[0,:], label='Val. Acc.')
+    plt.plot(tot_tracc[0,:], linestyle='--', label='Tr. Acc.')
+    plt.ylim(bottom=0,top=1)
+    plt.yticks(plt_yticks)
+    plt.grid(True)
+    plt.legend()
+    plt.title(f'Validation Accuracy for label #{lnum}')
+    plt.savefig(outpath / f'lb{lnum}.png')
+    plt.close(fig)
+
+
 if __name__ == '__main__':
     #cli()
-    autorun()
+    #autorun()
+    runlb(0)
