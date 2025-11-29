@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import random_split
 from torch_geometric.loader import DataLoader as GDL
+import torch_geometric.transforms as T
 from pathlib import Path
 from src.dataset import MapGraph
 from src.sage import GraphSAGEGraphLevel
@@ -8,12 +9,13 @@ from src.gat import GATGraphLevel
 import colorama
 from colorama import Fore, Back, Style
 import numpy as np
+import src.transforms as TFs
 from src.labels import LabelsEnum
 from src.tprint import TabPrint
 from typing import Literal as Lit
 from tqdm.auto import tqdm
 from matplotlib import pyplot as plt
-import click
+
 colorama.init(autoreset=True)
 
 # graph building parameters
@@ -22,7 +24,7 @@ RADIUS_EDGE_CONN = 40
 # data description
 EMB_DIM = 12
 NUM_POSSIBLE_STATION_TYPES = 256
-NUM_TEMPORAL_FEATURES = 5
+NUM_TEMPORAL_FEATURES = 7
 NUM_STATIC_FEATURES = 2
 FRAMES_PER_PACK = 20
 
@@ -148,30 +150,13 @@ def train_model(model:torch.nn.Module, train_loader:GDL, eval_loader:GDL, epochs
         tot_vacc[:,epoch] = tot_val_accuracy
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc)
 
-@click.command()
-@click.option('-D', '--dirpath', 'dirpath', type=click.Path(exists=True,file_okay=False,dir_okay=True), default=None, help='Path to the dataset directory. The directory must contain 3 files, namely "packs.parquet", "labels.parquet" and "vinfo.parquet"', required=True)
-@click.option('--no-dims-features', is_flag=True, default=False, help='Do not include vehicle dimensions (width and length) in the node features.')
-@click.option('-P','--pos-rescaling', type=click.Choice(MapGraph.pos_rescaling_opt_type.__args__), default='center', help='Position rescaling option to apply to node features. Default is "center".')
-@click.option('-b', '--build-only', is_flag=True, default=False, help='Only build and save the graphs from the raw dataset without training the model.')
-@click.option('-r', '--rebuild', is_flag=True, default=False, help='Rebuild the dataset graphs even if they already exist on disk.')
-@click.option('-m', '--model', type=click.Choice(Model_opts_type.__args__), default='sage', help='Type of GNN model to use: GraphSAGE or GAT.')
-@click.option('-v', '--verbose', is_flag=True, default=False, help='Enable verbose output.')
-@click.option('--progress-logging', type=click.Choice(Progress_logging_options.__args__), default='clilog', help='Choice for visualization of progress in training.')
-def cli(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_features, progress_logging):
-    return rungnn(dirpath, verbose, build_only, rebuild, pos_rescaling, model, no_dims_features, progress_logging)
-
-def rungnn(dirpath, verbose:bool=False, build_only:bool=False, rebuild:bool=False, pos_rescaling:MapGraph.pos_rescaling_opt_type='center', model:Model_opts_type='sage', no_dims_features:bool=False, progress_logging:Progress_logging_options='clilog', active_labels=DF_ACTIVE_LABELS, save:bool=True, wd:float=DF_WEIGHT_DECAY,lr:float=DF_LR,bs:int=DF_BATCH_SIZE, epochs:int=DF_EPOCHS):
-    in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + (0 if no_dims_features else NUM_STATIC_FEATURES)
+def rungnn(dirpath, verbose:bool=False, model:Model_opts_type='sage', progress_logging:Progress_logging_options='clilog',*,active_labels=DF_ACTIVE_LABELS, wd:float=DF_WEIGHT_DECAY,lr:float=DF_LR,bs:int=DF_BATCH_SIZE, epochs:int=DF_EPOCHS, transform=None,dropout:float=0.2,hidden_dims:list[int]=[32, 32],emb_dim:int=EMB_DIM):
+    in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + NUM_STATIC_FEATURES
     # load data
-    dpath = Path(dirpath).resolve()
-    ds = MapGraph(dpath, active_labels=active_labels, m_radius=RADIUS_EDGE_CONN, rebuild=rebuild, pos_rescaling=pos_rescaling, use_dims_features=not no_dims_features)
+    dpath = Path(dirpath).resolve() / '.graphs'
+    ds = MapGraph(dpath,frames_num=FRAMES_PER_PACK, m_radius=RADIUS_EDGE_CONN, active_labels=active_labels, device=DEVICE, transform=transform, normalizeZScore=True)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
-    if save:
-        ds.save(tqdm=True)
-        if build_only:
-            print(f"{Fore.GREEN}✔ Graphs built and saved. Exiting as per --build-only/-b flag.{Style.RESET_ALL}")
-            return
 
     # split train and eval
     d_train,d_eval = split_tr_ev_3to1(ds)
@@ -185,10 +170,10 @@ def rungnn(dirpath, verbose:bool=False, build_only:bool=False, rebuild:bool=Fals
     match model:
         case 'sage':
             print(f"{Fore.CYAN}Using GraphSAGE model.{Style.RESET_ALL}")
-            model = GraphSAGEGraphLevel(in_dim=in_dim, hidden_dims=SAGE_HIDDEN_DIMS, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM)
+            model = GraphSAGEGraphLevel(in_dim=in_dim, hidden_dims=hidden_dims, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=emb_dim, dropout=dropout)
         case 'gat':
             print(f"{Fore.CYAN}Using GAT model.{Style.RESET_ALL}")
-            model = GATGraphLevel(in_dim=in_dim, hidden_dims=GAT_HIDDEN_DIMS, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=EMB_DIM, heads=8)
+            model = GATGraphLevel(in_dim=in_dim, hidden_dims=hidden_dims, out_dim=len(active_labels), num_st_types=NUM_POSSIBLE_STATION_TYPES, emb_dim=emb_dim, heads=8, dropout=dropout)
         case _:
             raise ValueError(f"Unknown model type: {model}")
     return train_model(model,dl_train,dl_eval,epochs=epochs,lr=lr,weight_decay=wd,device=DEVICE,verbose=verbose, progress_logging=progress_logging, active_labels=active_labels)
@@ -200,7 +185,7 @@ def autorun():
     plt_yticks = np.arange(-0.1, 1.2, 0.1)
 
     lr = DF_LR
-    bs = 16
+    bs = DF_BATCH_SIZE
     wd = DF_WEIGHT_DECAY
     epochs = DF_EPOCHS
 
@@ -266,25 +251,48 @@ def autorun():
     plt.savefig(outpath / f'overall_tot_acc_bs{bs}_lr{lr}_wd{wd}.png')
     plt.close(fig)
 
-def runlb(lnum:int):
-    path = Path(__file__).resolve().parent / 'input' / 'labels' / f'lb{lnum}'
-    outpath = Path(__file__).resolve().parent / 'out' / 'labels' / f'lb{lnum}'
+def runModel(name:str,lbnum:int):
+    path = Path(__file__).resolve().parent / 'input' / 'labels' / f'lb{name}'
+    outpath = Path(__file__).resolve().parent / 'out' / 'labels' / f'lb{name}'
+    outpath.mkdir(parents=True, exist_ok=True)
     plt_yticks = np.arange(-0.1, 1.2, 0.1)
 
-    lr = 5e-4
+    lr = 4e-3
     bs = 32
     wd = 1e-5
-    epochs = 200
+    epochs = 100
+    dropout = 0.3
+    hidden_dims = [128, 64]
+    emb_dim = 10
+    pos_noise = 0.15
+
+    # string with all params in exp format
+    params_str = f"LR{lr:.2e}_BS{bs:02d}_WD{wd:.2e}_EP{epochs:02d}_DRP{dropout:.2f}_HID{'x'.join([str(h) for h in hidden_dims])}_EMB{emb_dim:02d}_PNS{pos_noise:.2e}"\
+        .replace('.','p')\
+        .replace('-','m')
+
+
+
+    transform = T.Compose([
+        TFs.RandomRotate(num_frames=20, device=DEVICE),
+        TFs.RescalePosToVCenter(),
+        TFs.PosNoise(std=pos_noise,device=DEVICE)        
+    ])
 
     (_, tot_tracc),(_, tot_vacc) = rungnn(
         path,
-        active_labels=[lnum], 
+        verbose=False,
+        model='sage',
         progress_logging='clilog',
-        save=False,
-        epochs=epochs,
-        lr=lr,
+        active_labels=[lbnum],
         wd=wd,
-        bs=bs
+        lr=lr,
+        bs=bs,
+        epochs=epochs,
+        transform=transform,
+        dropout=dropout,
+        hidden_dims=hidden_dims,
+        emb_dim=emb_dim
     )
     fig = plt.figure()
     plt.plot(tot_vacc[0,:], label='Val. Acc.')
@@ -294,11 +302,11 @@ def runlb(lnum:int):
     plt.grid(True)
     plt.legend()
     plt.title(f'Validation Accuracy for label #{lnum}')
-    plt.savefig(outpath / f'lb{lnum}.png')
+    plt.savefig(outpath / f'RUN_{params_str}.png')
     plt.close(fig)
 
 
 if __name__ == '__main__':
     #cli()
     #autorun()
-    runlb(0)
+    runModel('0s',0)
