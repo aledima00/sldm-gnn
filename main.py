@@ -301,7 +301,7 @@ def runModel(name:str,lbnum:int):
     plt.yticks(plt_yticks)
     plt.grid(True)
     plt.legend()
-    plt.title(f'Validation Accuracy for label #{lnum}')
+    plt.title(f'Validation Accuracy for label #{lbnum}')
     plt.savefig(outpath / f'RUN_{params_str}.png')
     plt.close(fig)
 
