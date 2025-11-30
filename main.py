@@ -15,11 +15,9 @@ from src.tprint import TabPrint
 from typing import Literal as Lit
 from tqdm.auto import tqdm
 from matplotlib import pyplot as plt
+import click
 
 colorama.init(autoreset=True)
-
-# graph building parameters
-RADIUS_EDGE_CONN = 40
 
 # data description
 EMB_DIM = 12
@@ -154,7 +152,7 @@ def rungnn(dirpath, verbose:bool=False, model:Model_opts_type='sage', progress_l
     in_dim = FRAMES_PER_PACK * NUM_TEMPORAL_FEATURES  + NUM_STATIC_FEATURES
     # load data
     dpath = Path(dirpath).resolve() / '.graphs'
-    ds = MapGraph(dpath,frames_num=FRAMES_PER_PACK, m_radius=RADIUS_EDGE_CONN, active_labels=active_labels, device=DEVICE, transform=transform, normalizeZScore=True)
+    ds = MapGraph(dpath,frames_num=FRAMES_PER_PACK, active_labels=active_labels, device=DEVICE, transform=transform, normalizeZScore=True)
     print(f" - Using device: {DEVICE}")
     print(f" - Dataset length: {len(ds)}")
 
@@ -251,9 +249,13 @@ def autorun():
     plt.savefig(outpath / f'overall_tot_acc_bs{bs}_lr{lr}_wd{wd}.png')
     plt.close(fig)
 
-def runModel(name:str,lbnum:int):
-    path = Path(__file__).resolve().parent / 'input' / 'labels' / f'lb{name}'
-    outpath = Path(__file__).resolve().parent / 'out' / 'labels' / f'lb{name}'
+@click.command()
+@click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
+@click.argument('outdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
+@click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
+def runModel(inputdir,outdir,lbnum:int):
+    path = inputdir.resolve()
+    outpath = outdir.resolve()
     outpath.mkdir(parents=True, exist_ok=True)
     plt_yticks = np.arange(-0.1, 1.2, 0.1)
 
@@ -307,6 +309,5 @@ def runModel(name:str,lbnum:int):
 
 
 if __name__ == '__main__':
-    #cli()
     #autorun()
-    runModel('0s',0)
+    runModel()

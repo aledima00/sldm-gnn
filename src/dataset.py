@@ -33,10 +33,9 @@ def _statsToMuSigma(sum_x:_tch.Tensor, sum_x2:_tch.Tensor, tot_cnt:int, frames_n
 
 class MapGraph(_GDataset):
     pos_rescaling_opt_type = _Lit['none', 'center']
-    def __init__(self, graphs_dirpath:_Path,*,frames_num:int=20,m_radius:float=10.0, active_labels:list[int]=None,device:str='cpu',transform=None,normalizeZScore:bool=True):
+    def __init__(self, graphs_dirpath:_Path,*,frames_num:int=20, active_labels:list[int]=None,device:str='cpu',transform=None,normalizeZScore:bool=True):
         super().__init__(transform=transform)
         self.frames_num = frames_num
-        self.m_radius = m_radius
         self.dirpath = graphs_dirpath.resolve()
         self.active_labels = active_labels
 
