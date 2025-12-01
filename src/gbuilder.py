@@ -21,16 +21,16 @@ def rescaleToCenter(x_arr:_np.ndarray,stat_arr:_np.ndarray)->_np.ndarray:
     xs = x[:,:,0]
     ys = x[:,:,1]
     angles = x[:,:,3]
-    lengths = stat_arr[:,0,1]  # length is second static feature
+    lengths = stat_arr[:,:,1]  # length is second static feature
 
 
     # apply offsets
-    x[:,0] = xs - (lengths / 2) * _tch.cos(angles)
-    x[:,1] = ys - (lengths / 2) * _tch.sin(angles)
+    x[:,:,0] = xs - (lengths / 2) * _np.cos(angles)
+    x[:,:,1] = ys - (lengths / 2) * _np.sin(angles)
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rescaleToCenter:bool=True, removeDims:bool=False, flattenTime:bool=False)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, flattenTime:bool=False)->_GData:
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
@@ -61,7 +61,7 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
         x = raw_feats[:,:,:temp_dnum] # temporal features
         statx = raw_feats[:,0:1,temp_dnum:] # static features (same for all frames)
 
-        if rescaleToCenter:
+        if rscToCenter:
             x = rescaleToCenter(x, statx)
 
         if flattenTime:
@@ -114,11 +114,11 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
                 eil_internal_frame = []
                 eal_internal_frame = []
                 for i in range(num_vehicles):
-                    if x[i,f,5] < 0.5:
+                    if x[i,f,4] < 0.5:
                         continue # skip if not present
                     xi = x[i,f,0:2]  # X,Y
                     for j in range(num_vehicles):
-                        if x[j,f,5] < 0.5:
+                        if x[j,f,4] < 0.5:
                             continue # skip if not present
                         if i != j:
                             xj = x[j,f,0:2]
@@ -286,13 +286,14 @@ class GraphsBuilder:
 
         for i in range(nprocs):
             p = _mp.Process(target=pack2graph, kwargs={
+                'frames_num': self.frames_num,
                 'vinfo_df': self.vinfo_df,
                 'm_radius': self.m_radius,
                 'active_labels': self.active_labels if hasattr(self, 'active_labels') else None,
                 'gpath': self.gpath,
                 'progress_queue': progress_queue,
                 'data_src_queue': data_src_queue,
-                'rescaleToCenter': self.rscToCenter,
+                'rscToCenter': self.rscToCenter,
                 'removeDims': self.removeDims,
                 'addSinCosTimeEnc': self.addSinCosTimeEnc
             })
