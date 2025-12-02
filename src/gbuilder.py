@@ -8,6 +8,7 @@ from pathlib import Path as _Path
 from shutil import rmtree as _rmrf
 from tqdm.auto import tqdm as _tqdm
 import pyarrow.parquet as _pqt
+import json as _json
 
 from .labels import LabelsEnum as _LBEN
 
@@ -30,24 +31,27 @@ def rescaleToCenter(x_arr:_np.ndarray,stat_arr:_np.ndarray)->_np.ndarray:
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, flattenTime:bool=False)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, flattenTime:bool=False)->_GData:
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
     
     vinfo_df['stType'] = vinfo_df['stType'].astype('long')
 
-    t_dims = ['X','Y','Speed','Angle','PresenceFlag']
-    st_dims = ['width','length','stType']
-
+    t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
+    t_fnum = len(t_fnames)
+    t_fnum_final = t_fnum + (2 if addSinCosTimeEnc else 0) + (1 if heading_enc else 0)
+    # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag,(tsin,tcos)]
     if addSinCosTimeEnc:
-            # already added in finalizepdf
-            t_dims.extend(['tsin', 'tcos'])
-    tot_fnames = t_dims + st_dims
-    
-    temp_dnum = len(t_dims)
-    stat_dnum = len(st_dims)
-    tot_dnum = temp_dnum + stat_dnum
+        # prepare once sin/cos time encodings
+        tsin = _np.sin(2 * _np.pi * _np.arange(frames_num) / frames_num).reshape(1, frames_num, 1)
+        tcos = _np.cos(2 * _np.pi * _np.arange(frames_num) / frames_num).reshape(1, frames_num, 1)
+
+    st_fnames = ['width','length','stType']
+    st_fnum = len(st_fnames)
+
+    tot_fnames = t_fnames + st_fnames
+    tot_fnum = t_fnum + st_fnum
 
     item = data_src_queue.get()
     while item is not None:
@@ -56,23 +60,20 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
         # add static features from vinfo
         pack_df = pack_df.merge(vinfo_df, on='VehicleId', how='inner')
         pack_df = pack_df.sort_values(['VehicleId','FrameId'])
-        raw_feats = pack_df[tot_fnames].to_numpy().reshape(-1, frames_num, tot_dnum)  # num_vehicles x num_frames x num_features
+        raw_feats = pack_df[tot_fnames].to_numpy().reshape(-1, frames_num, tot_fnum)  # num_vehicles x num_frames x num_features
 
-        x = raw_feats[:,:,:temp_dnum] # temporal features
-        statx = raw_feats[:,0:1,temp_dnum:] # static features (same for all frames)
+        x = raw_feats[:,:,:t_fnum] # temporal features
+        statx = raw_feats[:,0:1,t_fnum:] # static features (same for all frames)
 
         if rscToCenter:
             x = rescaleToCenter(x, statx)
 
-        if flattenTime:
-            x = x.reshape(-1, temp_dnum*frames_num)  # flatten over time dimension
-
         if removeDims:
-            # remove width and length from static features
-            statx = _np.delete(statx, [0,1], axis=2 if flattenTime else 1)  # remove first two columns (width, length)
+            # remove width and length (first 2 columns) from static features
+            statx = _np.delete(statx, [0,1], axis=2)
 
+        statx = statx.reshape(statx.shape[0], -1)  # num_vehicles x num_static_features
         gdata_dict = {
-            'x': _tch.tensor(x, dtype=_tch.float, device='cpu'),
             'statx': _tch.tensor(statx, dtype=_tch.float, device='cpu')
         }
         
@@ -80,26 +81,25 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
         if flattenTime:
             # edge index construction based on distance of trajectories
             ## min distance used for threshold
-            ## inverse of avg distance used for edge value
-            tjsdf = pack_df[['VehicleId','FrameId','X','Y','PresenceFlag']] # df of trajectories
-            vehicle_ids = tjsdf['VehicleId'].unique()
+            ## inverse of avg distance used for edge values
             edge_index_list = []
             edge_attr_list = []
-            for i, vid1 in enumerate(vehicle_ids):
-                traj1df = tjsdf[tjsdf['VehicleId'] == vid1].sort_values('FrameId')[['X','Y','PresenceFlag']]
-                traj1 = traj1df[['X','Y']].to_numpy()
-                for j, vid2 in enumerate(vehicle_ids):
+            num_vehicles = x.shape[0]
+            for i in range(num_vehicles):
+                xi = x[i,:,:2]  # X,Y - (fr, 2)
+                pi = x[i,:,4]  # PresenceFlag - (fr,)
+                for j in range(num_vehicles):
                     if i != j:
-                        traj2df = tjsdf[tjsdf['VehicleId'] == vid2].sort_values('FrameId')[['X','Y','PresenceFlag']]
-                        traj2 = traj2df[['X','Y']].to_numpy()
+                        xj = x[j,:,:2]  # X,Y - (fr, 2)
+                        pj = x[j,:,4]  # PresenceFlag - (fr,)
 
                         # compute distances
-                        dists:_np.ndarray = _np.linalg.norm(traj1 - traj2, axis=1)
+                        dists:_np.ndarray = _np.linalg.norm(xi - xj, axis=1)  # (fr,)
                         # consider only frames where both vehicles are present
-                        presence_mask = (traj1df['PresenceFlag'].to_numpy() > 0.5) & (traj2df['PresenceFlag'].to_numpy() > 0.5)
-                        dists[~presence_mask] = _np.inf
-                        if dists.mean() <= m_radius:
-                            avg_dist = _np.mean(dists[_np.isfinite(dists)])
+                        presence_mask = (pi > 0.5) & (pj > 0.5)
+                        dists = dists[presence_mask]
+                        if (not dists.size == 0) and dists.mean() <= m_radius:
+                            avg_dist = dists.mean()
                             edge_index_list.append([i,j])
                             edge_attr_list.append([1.0 / (avg_dist + 1e-6)])  # avoid div by zero
 
@@ -131,6 +131,20 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             gdata_dict['edge_index_list'] = edge_index_list
             gdata_dict['edge_attr_list'] = edge_attr_list
 
+        if heading_enc:
+            # replace angle with 2 features of sin+cos heading encoding
+            headings_sin = _np.sin(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
+            headings_cos = _np.cos(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
+            x = _np.concatenate([x[:,:,:3], headings_sin, headings_cos, x[:,:,4:]], axis=2)
+
+        if addSinCosTimeEnc:
+            tsin_broadcast = _np.repeat(tsin, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
+            tcos_broadcast = _np.repeat(tcos, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
+            x = _np.concatenate([x, tsin_broadcast, tcos_broadcast], axis=2)
+        if flattenTime:
+            x = x.reshape(-1, t_fnum_final*frames_num)  # flatten over time dimension
+        gdata_dict['x'] = _tch.tensor(x, dtype=_tch.float, device='cpu')
+        
         if mlb is not None:
             # labels are stored as bitmask in an integer
             y = _tch.zeros((len(active_labels),), dtype=_tch.float)
@@ -171,7 +185,7 @@ class GraphsBuilder:
     labels_df: _pd.DataFrame # dataframe of labels
     vinfo_df: _pd.DataFrame # dataframe of vehicle info
 
-    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, active_labels:list[int]=None):
+    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, flatten_time:bool=False, active_labels:list[int]=None):
 
         self.dirpath = dirpath.resolve()
         self.gpath = self.dirpath / '.graphs' # output graphs path
@@ -182,6 +196,8 @@ class GraphsBuilder:
         self.addSinCosTimeEnc = addSinCosTimeEnc
         self.rscToCenter = rscToCenter
         self.removeDims = removeDims
+        self.heading_enc = heading_enc
+        self.flattenTime = flatten_time
 
         self.xpath = self.dirpath / 'packs.parquet'
         self.ypath = self.dirpath / 'labels.parquet'
@@ -240,11 +256,6 @@ class GraphsBuilder:
                     new_row = new_row.astype(pdf.dtypes.to_dict())
                     pdf = _pd.concat([pdf, new_row], ignore_index=True)
         
-        if self.addSinCosTimeEnc:
-            # apply sin+cos temporal encoding as 2 extra features
-            pdf['tsin'] = pdf['FrameId'].map(lambda x: _np.sin(2 * _np.pi * x / self.frames_num)).astype('float16')
-            pdf['tcos'] = pdf['FrameId'].map(lambda x: _np.cos(2 * _np.pi * x / self.frames_num)).astype('float16')
-        
         # sort by FrameId, VehicleId for consistent ordering
         pdf = pdf.sort_values(['FrameId', 'VehicleId']).reset_index(drop=True)
 
@@ -272,7 +283,28 @@ class GraphsBuilder:
         return None
     
     def save(self):
-        """ Processes the packs and saves them as graph data files. """
+        """
+        Processes the packs and saves them as graph data files.
+        Graphs are saved in the directory specified by self.gpath.
+        Format of saved data is:
+        - `.x`: Node feature matrix, of shape [num_vehicles, num_frames, *NTF*] or [num_vehicles, num_frames * NTF] if flattenTime is True.
+        - `.statx`: Static features matrix, of shape [num_vehicles, *NSF*]
+        - `.edge_index`: Edge index tensor, of shape [2, num_edges] (if flattenTime is True)
+        - `.edge_attr`: Edge attribute tensor, of shape [num_edges, 1] (if flattenTime is True)
+        - `.edge_index_list`: List of edge index tensors, one per frame (if flattenTime is False)
+        - `.edge_attr_list`: List of edge attribute tensors, one per frame (if flattenTime is False)
+        - `.y`: Multi-label binary vector of shape [num_active_labels] (if labels are present)
+
+        Note that featues used in nodes are:
+        - Temporal features per vehicle per frame (*NTF*): [X, Y, Speed, (HeadingSin, HeadingCos) | Angle, PresenceFlag, (tsin, tcos)]
+            - *NTF* = 5 if heading_enc is False and addSinCosTimeEnc is False
+            - *NTF* = 6 if heading_enc is True and addSinCosTimeEnc is False
+            - *NTF* = 7 if heading_enc is False and addSinCosTimeEnc is True
+            - *NTF* = 8 if heading_enc is True and addSinCosTimeEnc is True
+        - Static features per vehicle (*NSF*): [width, length, stType] (unless removeDims is True, then only [stType])
+            - *NSF* = 3 if removeDims is False
+            - *NSF* = 1 if removeDims is True
+        """
         nprocs = _mp.cpu_count() // 2
         print(f"Processing and Saving packs as Graphs, using {nprocs} processes...")
 
@@ -295,7 +327,9 @@ class GraphsBuilder:
                 'data_src_queue': data_src_queue,
                 'rscToCenter': self.rscToCenter,
                 'removeDims': self.removeDims,
-                'addSinCosTimeEnc': self.addSinCosTimeEnc
+                'heading_enc': self.heading_enc,
+                'addSinCosTimeEnc': self.addSinCosTimeEnc,
+                'flattenTime': self.flattenTime
             })
             p.start()
             processes.append(p)
@@ -329,5 +363,20 @@ class GraphsBuilder:
             p.join()
         logproc.join()
         print(f"All graphs built and saved to {self.gpath}")
+
+        # save metadata
+        meta_dict = {
+            'frames_num': self.frames_num,
+            'm_radius': self.m_radius,
+            'sin_cos_time_enc': self.addSinCosTimeEnc,
+            'vpos_rescaled_center': self.rscToCenter,
+            'has_dims': not self.removeDims,
+            'heading_encoded': self.heading_enc,
+            'flattened_time': self.flattenTime,
+            'active_labels': self.active_labels
+        }
+        with open(self.gpath / 'metadata.json', 'w', encoding='utf-8') as metafile:
+            _json.dump(meta_dict, metafile, indent=4, ensure_ascii=False)
+
                 
 
