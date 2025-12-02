@@ -4,10 +4,15 @@ from torch_geometric.nn import SAGEConv, global_mean_pool, global_max_pool
 import torch.nn.functional as F
 
 class GraphSAGEGraphLevel(nn.Module):
-    def __init__(self, in_dim, hidden_dims=[128, 128], fcdims=[50,50], out_dim=10, num_st_types=256, emb_dim=12, dropout=0.1):
+    def __init__(self, dynamic_features_num, has_dims, frames_num, hidden_dims=[128, 128], fcdims=[50,50], out_dim=10, num_st_types=256, emb_dim=12, dropout=0.1):
         super().__init__()
+
+        # 1 - embedding for station types
         self.st_emb = nn.Embedding(num_st_types, emb_dim)
-        cdims = [in_dim + emb_dim] + hidden_dims
+
+        # 2 - GraphSAGE layers
+        in_dim = dynamic_features_num*frames_num + (2 if has_dims else 0) + emb_dim
+        cdims = [in_dim] + hidden_dims
         self.convs = nn.ModuleList([
             SAGEConv(cdims[i], cdims[i+1]) for i in range(len(cdims)-1)
         ])
@@ -15,6 +20,7 @@ class GraphSAGEGraphLevel(nn.Module):
             nn.LayerNorm(cdims[i+1]) for i in range(len(cdims)-1)
         ])
 
+        # 3 - final fc layers
         ldims = [hidden_dims[-1]*2] + fcdims + [out_dim]
         self.fcs = nn.ModuleList([
             nn.Sequential(
