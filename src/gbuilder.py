@@ -12,7 +12,7 @@ import json as _json
 
 from .labels import LabelsEnum as _LBEN
 
-def rescaleToCenter(x_arr:_np.ndarray,stat_arr:_np.ndarray)->_np.ndarray:
+def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
     """
     Rescales the (X,Y) coordinates in the graph data based on the vehicle dimensions (width, length) and on the angle.
     Assuming original coordinates are taken from the center of the front border of the vehicle box,
@@ -22,7 +22,7 @@ def rescaleToCenter(x_arr:_np.ndarray,stat_arr:_np.ndarray)->_np.ndarray:
     xs = x[:,:,0]
     ys = x[:,:,1]
     angles = x[:,:,3]
-    lengths = stat_arr[:,:,1]  # length is second static feature
+    lengths = dims_arr[:,:,1]  # length is second static feature
 
 
     # apply offsets
@@ -50,6 +50,8 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
     st_fnames = ['width','length','stType']
     st_fnum = len(st_fnames)
 
+    stt_fidx = t_fnum + st_fnum -1  # index of stType in total features
+
     tot_fnames = t_fnames + st_fnames
     tot_fnum = t_fnum + st_fnum
 
@@ -63,19 +65,20 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
         raw_feats = pack_df[tot_fnames].to_numpy().reshape(-1, frames_num, tot_fnum)  # num_vehicles x num_frames x num_features
 
         x = raw_feats[:,:,:t_fnum] # temporal features
-        statx = raw_feats[:,0:1,t_fnum:] # static features (same for all frames)
+        xdims = raw_feats[:,0:1,t_fnum:stt_fidx] # static features (same for all frames)
+        xsttype = raw_feats[:,0,stt_fidx]
 
         if rscToCenter:
-            x = rescaleToCenter(x, statx)
+            x = rescaleToCenter(x, xdims)
 
-        if removeDims:
-            # remove width and length (first 2 columns) from static features
-            statx = _np.delete(statx, [0,1], axis=2)
-
-        statx = statx.reshape(statx.shape[0], -1)  # num_vehicles x num_static_features
         gdata_dict = {
-            'statx': _tch.tensor(statx, dtype=_tch.float, device='cpu')
+            'xsttype': _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
         }
+
+        if not removeDims:
+            # remove width and length (first 2 columns) from static features
+            xdims = xdims.reshape(xdims.shape[0], -1)  # num_vehicles x num_static_features
+            gdata_dict['xdims'] = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
         
         
         if flattenTime:
@@ -288,7 +291,8 @@ class GraphsBuilder:
         Graphs are saved in the directory specified by self.gpath.
         Format of saved data is:
         - `.x`: Node feature matrix, of shape [num_vehicles, num_frames, *NTF*] or [num_vehicles, num_frames * NTF] if flattenTime is True.
-        - `.statx`: Static features matrix, of shape [num_vehicles, *NSF*]
+        - `.xdims`: Static feature matrix, of shape [num_vehicles, 2] (if hasDims is True)
+        - `.xsttype`: Static feature vector of vehicle types, of shape [num_vehicles]
         - `.edge_index`: Edge index tensor, of shape [2, num_edges] (if flattenTime is True)
         - `.edge_attr`: Edge attribute tensor, of shape [num_edges, 1] (if flattenTime is True)
         - `.edge_index_list`: List of edge index tensors, one per frame (if flattenTime is False)
@@ -301,9 +305,6 @@ class GraphsBuilder:
             - *NTF* = 6 if heading_enc is True and addSinCosTimeEnc is False
             - *NTF* = 7 if heading_enc is False and addSinCosTimeEnc is True
             - *NTF* = 8 if heading_enc is True and addSinCosTimeEnc is True
-        - Static features per vehicle (*NSF*): [width, length, stType] (unless removeDims is True, then only [stType])
-            - *NSF* = 3 if removeDims is False
-            - *NSF* = 1 if removeDims is True
         """
         nprocs = _mp.cpu_count() // 2
         print(f"Processing and Saving packs as Graphs, using {nprocs} processes...")
