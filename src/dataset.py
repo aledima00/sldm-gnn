@@ -6,38 +6,53 @@ from torch.serialization import safe_globals
 from typing import Literal as _Lit
 from tqdm.auto import tqdm as _tqdm
 
-def _statsToMuSigma(sum_x:_tch.Tensor, sum_x2:_tch.Tensor, tot_cnt:int, frames_num:int=20)->tuple[_tch.Tensor,_tch.Tensor]:
+from .labels import LabelsEnum as _LE
+from .utils import MetaData as _MD
 
-    # static features
-    s_wl = sum_x[7*frames_num:]
-    s_wl2 = sum_x2[7*frames_num:]
-    mu_wl = s_wl / tot_cnt
-    sigma_wl = ((s_wl2 / tot_cnt) - (mu_wl ** 2)).sqrt()
-    
-    # temporal features
-    # sxt = sum_x[:7] + sum_x2[7:14] + ...
-    sxt = _tch.zeros(7, device=sum_x.device)
-    sxt2 = _tch.zeros(7, device=sum_x.device)
-    for i in range(frames_num):
-        sxt += sum_x[i*7:(i+1)*7]
-        sxt2 += sum_x2[i*7:(i+1)*7]
+def _statsToMuSigma(sum_x:_tch.Tensor, sum_x2:_tch.Tensor, tot_cnt:int, frames_num:int=20, flattenedTime:bool=False)->tuple[_tch.Tensor,_tch.Tensor]:
+    if flattenedTime:
+        nfeats = sum_x.size(1) // frames_num
+        sxt = _tch.zeros((1,nfeats), device=sum_x.device)
+        sxt2 = _tch.zeros((1,nfeats), device=sum_x.device)
 
-    tcnt = tot_cnt * frames_num
-    mu_t = sxt / tcnt
-    sigma_t = ((sxt2 / tcnt) - (mu_t ** 2)).sqrt()
+        for i in range(frames_num):
+            sxt += sum_x[:,i*nfeats:(i+1)*nfeats]
+            sxt2 += sum_x2[:,i*nfeats:(i+1)*nfeats]
 
-    # append static features
-    mu = _tch.cat([mu_t.repeat(frames_num), mu_wl])
-    sigma = _tch.cat([sigma_t.repeat(frames_num), sigma_wl])
-    return mu, sigma
+        tcnt = tot_cnt * frames_num
+        mu_t = sxt / tcnt
+        sigma_t = ((sxt2 / tcnt) - (mu_t ** 2)).sqrt()
+
+        # repeat for each time frame
+        mu = mu_t.repeat(1,frames_num)
+        sigma = sigma_t.repeat(1,frames_num)
+        return mu, sigma
+    else:
+        # already have time dimension, so sum over it
+        sxt = sum_x.sum(dim=1,keepdim=True)
+        sxt2 = sum_x2.sum(dim=1,keepdim=True)
+        tcnt = tot_cnt * frames_num
+        mu = sxt / tcnt
+        sigma = ((sxt2 / tcnt) - (mu ** 2)).sqrt()
+        return mu, sigma
 
 class MapGraph(_GDataset):
     pos_rescaling_opt_type = _Lit['none', 'center']
-    def __init__(self, graphs_dirpath:_Path,*,frames_num:int=20, active_labels:list[int]=None,device:str='cpu',transform=None,normalizeZScore:bool=True):
+    def __init__(self, graphs_dirpath:_Path,*, device:str='cpu',transform=None,normalizeZScore:bool=True,metadata:_MD=None):
         super().__init__(transform=transform)
-        self.frames_num = frames_num
+        if metadata is None:
+            metadata = _MD.loadJson(graphs_dirpath / 'metadata.json')
+        
+        self.frames_num = metadata.frames_num
+        self.hasDims = metadata.has_dims
+        self.flattenedTime = metadata.flattened_time
+        self.active_labels = metadata.active_labels
+        self.heading_encoded = metadata.heading_encoded
+        self.time_encoded = metadata.sin_cos_time_enc
+        if self.active_labels is None:
+            self.active_labels = [l.value for l in _LE]
+
         self.dirpath = graphs_dirpath.resolve()
-        self.active_labels = active_labels
 
         # list of .pt graph files
         self.paths = list(sorted(self.dirpath.glob("*.pt")))
@@ -69,7 +84,9 @@ class MapGraph(_GDataset):
             graph = self.transform(graph)
         if self.normalizeZScore:
             # z-score normalization
-            graph.x = (graph.x - self.mu) / self.sigma
+            graph.x = (graph.x - self.mu["x"]) / self.sigma["x"]
+            if self.hasDims:
+                graph.xdims = (graph.xdims - self.mu["xdims"]) / self.sigma["xdims"]
         return graph
     
     @property
@@ -89,16 +106,32 @@ class MapGraph(_GDataset):
         return RawDataContext(self)
     
     def getMuSigma(self):
-        sum_x = None
-        sum_x2 = None
-        tot_cnt = 0
+        nfeats = 4 + (2 if self.heading_encoded else 1) + (2 if self.time_encoded else 0)
+        shapex = (1,self.frames_num*nfeats) if self.flattenedTime else (1,self.frames_num,nfeats)
+
+        sum_x = _tch.zeros(shapex,device=self.device,dtype=_tch.float)
+        sum_x2 = _tch.zeros(shapex,device=self.device,dtype=_tch.float)
+        
+        if self.hasDims:
+            sum_xdims = _tch.zeros((1,2), device=self.device)
+            sum_xdims2 = _tch.zeros((1,2), device=self.device)
+
+        vcnt = 0
+
         with self.usingRawData:
             for i in _tqdm(range(self.len()), desc="Computing dataset mean and std"):
-                g = self.innerGet(i)
-                if sum_x is None:
-                    sum_x = _tch.zeros(g.x.size(1), device=g.x.device)
-                    sum_x2 = _tch.zeros(g.x.size(1), device=g.x.device)
-                sum_x += g.x.sum(dim=0)
-                sum_x2 += (g.x ** 2).sum(dim=0)
-                tot_cnt += g.x.size(0)
-        return _statsToMuSigma(sum_x, sum_x2, tot_cnt, self.frames_num)
+                g = self.innerGet(i) # get raw graph
+
+                sum_x += g.x.sum(dim=0,keepdim=True)
+                sum_x2 += (g.x ** 2).sum(dim=0,keepdim=True)
+                
+                if self.hasDims:
+                    sum_xdims += g.xdims.sum(dim=0,keepdim=True)
+                    sum_xdims2 += (g.xdims ** 2).sum(dim=0,keepdim=True)
+                vcnt += g.x.size(0)
+
+        if self.hasDims:
+            mu_xdims = sum_xdims / vcnt
+            sigma_xdims = ((sum_xdims2 / vcnt) - (mu_xdims ** 2)).sqrt()
+        mu_x, sigma_x = _statsToMuSigma(sum_x, sum_x2, vcnt, self.frames_num, flattenedTime=self.flattenedTime)
+        return ({"x": mu_x, "xdims": mu_xdims if self.hasDims else None}, {"x": sigma_x, "xdims": sigma_xdims if self.hasDims else None})

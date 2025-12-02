@@ -18,10 +18,9 @@ class GraphSAGEGraphLevel(nn.Module):
         self.dropout = dropout
 
     def forward(self, data):
-        x, edge_index, edge_attr, st_types_feats, batch = data.x, data.edge_index, data.edge_attr, data.st_types_feats, data.batch
-        st_embedded:torch.Tensor = self.st_emb(st_types_feats)
-        st_embedded = st_embedded.squeeze(1)
-        x = torch.cat([x, st_embedded], dim=1)
+        x, edge_index, edge_attr, xdims, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xdims, data.xsttype, data.batch
+        st_embedded:torch.Tensor = self.st_emb(xsttype)
+        x = torch.cat([x, xdims,st_embedded], dim=1)
         for conv, norm in zip(self.convs, self.norms):
             x = conv(x, edge_index)
             x = norm(x)
