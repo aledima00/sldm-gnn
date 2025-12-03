@@ -16,7 +16,8 @@ DEF_RADIUS = 30.0
 @click.option('--time-sc-enc', 'addSinCosTimeEnc', is_flag=True, default=False, help='Add sine-cosine time encoding to the data.')
 @click.option('-F', '--flatten-time', 'flatten_time', is_flag=True, default=False, help='Flatten time dimension into features.')
 @click.option('--no-heading-enc', 'no_heading_enc', is_flag=True, default=False, help='Disable heading encoding in sin+cos coordinates.')
-def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, addSinCosTimeEnc, flatten_time, no_heading_enc):
+@click.option('--aggregate-edges/--no-aggregate-edges', 'aggregate_edges', default=True, help='Enable or disable edge feature aggregation when building graphs.')
+def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, addSinCosTimeEnc, flatten_time, no_heading_enc, aggregate_edges):
     builder = GraphsBuilder(
         Path(data_path),
         frames_num=frames_num,
@@ -27,6 +28,7 @@ def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, re
         heading_enc = not no_heading_enc,
         flatten_time=flatten_time,
         active_labels=[active_label],
+        aggregate_edges=aggregate_edges
     )
     builder.save()
 

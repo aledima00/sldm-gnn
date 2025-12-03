@@ -146,6 +146,7 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             x = _np.concatenate([x[:,:,:3], headings_sin, headings_cos, x[:,:,4:]], axis=2)
 
         if addSinCosTimeEnc:
+            # TODO SHOULD I ORDER BY FRAME BEFORE DOING THIS??
             tsin_broadcast = _np.repeat(tsin, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             tcos_broadcast = _np.repeat(tcos, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             x = _np.concatenate([x, tsin_broadcast, tcos_broadcast], axis=2)
@@ -282,7 +283,7 @@ class GraphsBuilder:
     
     def mlbByPid(self,pid:int)->int|None:
         """ Returns the MLBEncoded label for the given PackId, or None if not found. """
-        # HERE WE CAN ALSO SET SINGLE CHECK AT INIT FOR LABELS.PQT PRESENCE OR NOT
+        # TODO HERE WE CAN ALSO SET SINGLE CHECK AT INIT FOR LABELS.PQT PRESENCE OR NOT
         if hasattr(self, 'labels_df'):
             row = self.labels_df[self.labels_df['PackId'] == pid]
             if len(row) > 1:

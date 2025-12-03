@@ -13,6 +13,7 @@ class GRUGAT(_nn.Module):
         assert gat_nheads >= 1, "gat nheads must be at least 1"
         assert gat_edge_fnum >= 0, "gat_edge_fnum must be non-negative"
 
+        #TODO Implement additional edge-wise GRU to support non-aggregated edges case
         if not gat_edge_aggregated:
             raise NotImplementedError("Currently only gat_edge_aggregated=True is supported")
 

@@ -24,6 +24,7 @@ class RemoveDimsFeatures:
         if self.hasDims:
             # remove width and length from static features (first 2 features)
             del data.xdims
+            # TODO check: is this necessary or should i just ignore it, avoiding in the model the use of data.xdims directly?
         return data
     
 class RandomRotate:
@@ -37,6 +38,7 @@ class RandomRotate:
         self.headingEncoded = metadata.heading_encoded
     def __call__(self, data:_GData)->_GData:
         # random rotation angle
+        # TODO check this implementation
         dev = data.x.device
         theta = _tch.rand(1,device=dev).item() * 2 * _tch.pi
         cos_theta = _tch.cos(_tch.tensor(theta, device=dev))
@@ -47,6 +49,7 @@ class RandomRotate:
             [sin_theta, cos_theta]
         ], device=dev)
 
+        # TODO check: why in this implementation masks are not required w.r.t. other transforms?
         if self.flattenedTime:
             # extract positions (still temporal sequence)
             positions = data.x[:,self.posMask]
