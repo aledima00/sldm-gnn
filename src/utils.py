@@ -19,6 +19,8 @@ FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
 
 @_dc
 class MetaData:
+    n_node_temporal_features:int
+    n_edge_features:int
     frames_num:int
     m_radius:float
     sin_cos_time_enc:bool
@@ -26,6 +28,7 @@ class MetaData:
     has_dims:bool
     heading_encoded:bool
     flattened_time:bool
+    aggregate_edges:bool
     active_labels:list[int]
 
     @staticmethod

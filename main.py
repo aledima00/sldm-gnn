@@ -28,10 +28,10 @@ DF_ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 POS_NOISE_STD = 0.1
 
 # ------------------- SAGE parameters -------------------
-SAGE_NUM_TEMPORAL_FEATURES = 8
 SAGE_HIDDEN_DIMS = [128, 64]
-SAGE_FC_DIMS = [50, 50]
+SAGE_FC_DIMS = []
 SAGE_DROPOUT = 0.2
+SAGE_NEGSLOPE = 0.1
 # training params
 SAGE_EPOCHS = 10
 SAGE_BATCH_SIZE = 32
@@ -39,19 +39,17 @@ SAGE_LR = 0.005
 SAGE_WEIGHT_DECAY = 5e-4
 
 # ------------------- GRUGAT parameters -------------------
-GG_NUM_TEMPORAL_FEATURES = 6 # NO SIN-COS TIME ENCODING
-GG_GRU_HIDDEN_SIZE = 128
+GG_GRU_HIDDEN_SIZE = 96
 GG_GRU_NUM_LAYERS = 1
-GG_GAT_EDGE_FNUM = 1
 GG_GAT_HIDDEN_DIMS = [96,96]
 GG_GAT_NHEADS = 8
 GG_FCDIMS = []
 GG_DROPOUT = 0.05
-GG_NEGSLOPE = 0.2
+GG_NEGSLOPE = 0.1
 # training params
 GG_EPOCHS = 10
 GG_BATCH_SIZE = 32
-GG_LR = 1e-3
+GG_LR = 5e-4
 GG_WEIGHT_DECAY = 5e-4
 
 # device
@@ -75,12 +73,12 @@ def stripnum(match:re.Match)->str:
     else:
         return f"E{sign}{num}"
 
-def getPlotFname(model:Lit['sage','gat'], lbnum:int)->str:
+def getPlotFname(model:Lit['sage','gat'], lbnum:int, metadata:MetaData)->str:
     if model == 'sage':
         mstr = f"RUN_LB{lbnum}_SAGE_HDIMS{ 'x'.join([str(h) for h in SAGE_HIDDEN_DIMS])}_FCDIMS{ 'x'.join([str(f) for f in SAGE_FC_DIMS])}_EMB{EMB_DIM}_DRP{SAGE_DROPOUT:.1e}"
         pstr = f"EP{SAGE_EPOCHS}_BS{SAGE_BATCH_SIZE}_LR{SAGE_LR:.1e}_WD{SAGE_WEIGHT_DECAY:.1e}"
     elif model == 'gat':
-        mstr = f"RUN_LB{lbnum}_GRUHS{GG_GRU_HIDDEN_SIZE}_GRUNL{GG_GRU_NUM_LAYERS}_GEFN{GG_GAT_EDGE_FNUM}_GTHDIMS{'x'.join([str(h) for h in GG_GAT_HIDDEN_DIMS])}_GTNHDS{GG_GAT_NHEADS}_FCDIMS{'x'.join([str(f) for f in GG_FCDIMS])}_EMB{EMB_DIM}_DRP{GG_DROPOUT:.1e}"
+        mstr = f"RUN_LB{lbnum}_GRUGAT_GRUSZ{GG_GRU_HIDDEN_SIZE}x{GG_GRU_NUM_LAYERS}_EFN{metadata.n_edge_features}_GATHDIMS{'x'.join([str(h) for h in GG_GAT_HIDDEN_DIMS])}_GTNHDS{GG_GAT_NHEADS}_FCDIMS{'x'.join([str(f) for f in GG_FCDIMS])}_EMB{EMB_DIM}_DRP{GG_DROPOUT:.1e}"
         pstr = f"EP{GG_EPOCHS}_BS{GG_BATCH_SIZE}_LR{GG_LR:.1e}_WD{GG_WEIGHT_DECAY:.1e}"
     else:
         raise ValueError(f"Unknown model type: {model}")
@@ -106,7 +104,7 @@ def main(inputdir,outdir,lbnum:int, model:str):
 
 
     # string with all params in exp format
-    pfname = getPlotFname(model,lbnum)
+    pfname = getPlotFname(model,lbnum, metadata)
     
     transform = T.Compose([
         TFs.RandomRotate(metadata=metadata),
@@ -141,11 +139,12 @@ def main(inputdir,outdir,lbnum:int, model:str):
 
 def runGruGat(ds:MapGraph,metadata:MetaData):
     model = GRUGAT(
-        dynamic_features_num=GG_NUM_TEMPORAL_FEATURES,
+        dynamic_features_num=metadata.n_node_temporal_features,
         has_dims=metadata.has_dims,
         gru_hidden_size=GG_GRU_HIDDEN_SIZE,
         gru_num_layers=GG_GRU_NUM_LAYERS,
-        gat_edge_fnum=GG_GAT_EDGE_FNUM,
+        gat_edge_fnum=metadata.n_edge_features,
+        gat_edge_aggregated=metadata.aggregate_edges,
         gat_inner_dims=GG_GAT_HIDDEN_DIMS,
         gat_nheads = GG_GAT_NHEADS,
         fc_dims=GG_FCDIMS,
@@ -176,7 +175,7 @@ def runGruGat(ds:MapGraph,metadata:MetaData):
 
 def runSage(ds:MapGraph,metadata:MetaData):
     model = GraphSAGEGraphLevel(
-        dynamic_features_num=SAGE_NUM_TEMPORAL_FEATURES,
+        dynamic_features_num=metadata.n_node_temporal_features,
         has_dims=metadata.has_dims,
         frames_num=metadata.frames_num,
         hidden_dims=SAGE_HIDDEN_DIMS,
@@ -184,7 +183,8 @@ def runSage(ds:MapGraph,metadata:MetaData):
         out_dim=len(metadata.active_labels),
         num_st_types=NUM_POSSIBLE_STATION_TYPES,
         emb_dim=EMB_DIM,
-        dropout=SAGE_DROPOUT
+        dropout=SAGE_DROPOUT,
+        negative_slope=SAGE_NEGSLOPE
     )
     d_train,d_eval = psplit(ds)
     # create data loaders

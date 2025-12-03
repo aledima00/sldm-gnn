@@ -31,7 +31,7 @@ def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, flattenTime:bool=False)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, flattenTime:bool=False, aggregate_edges:bool=True)->_GData:
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
@@ -81,7 +81,7 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             gdata_dict['xdims'] = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
         
         
-        if flattenTime:
+        if aggregate_edges:
             # edge index construction based on distance of trajectories
             ## min distance used for threshold
             ## inverse of avg distance used for edge values
@@ -101,10 +101,15 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
                         # consider only frames where both vehicles are present
                         presence_mask = (pi > 0.5) & (pj > 0.5)
                         dists = dists[presence_mask]
-                        if (not dists.size == 0) and dists.mean() <= m_radius:
-                            avg_dist = dists.mean()
+                        if (not dists.size == 0) and dists.min() <= m_radius:
+                            min_dist = dists.min()
+                            max_dist = dists.max()
+                            mean_dist = dists.mean()
+                            msq_dist = (dists ** 2).mean()
+
                             edge_index_list.append([i,j])
-                            edge_attr_list.append([1.0 / (avg_dist + 1e-6)])  # avoid div by zero
+                            # use all attributes for distance statistics
+                            edge_attr_list.append([min_dist, max_dist, mean_dist, msq_dist])
 
             gdata_dict['edge_index'] = _tch.tensor(edge_index_list, dtype=_tch.long).t().contiguous()
             gdata_dict['edge_attr'] = _tch.tensor(edge_attr_list, dtype=_tch.float)
@@ -188,7 +193,7 @@ class GraphsBuilder:
     labels_df: _pd.DataFrame # dataframe of labels
     vinfo_df: _pd.DataFrame # dataframe of vehicle info
 
-    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, flatten_time:bool=False, active_labels:list[int]=None):
+    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, flatten_time:bool=False, aggregate_edges:bool=True, active_labels:list[int]=None):
 
         self.dirpath = dirpath.resolve()
         self.gpath = self.dirpath / '.graphs' # output graphs path
@@ -201,6 +206,7 @@ class GraphsBuilder:
         self.removeDims = removeDims
         self.heading_enc = heading_enc
         self.flattenTime = flatten_time
+        self.aggregate_edges = aggregate_edges
 
         self.xpath = self.dirpath / 'packs.parquet'
         self.ypath = self.dirpath / 'labels.parquet'
@@ -330,7 +336,8 @@ class GraphsBuilder:
                 'removeDims': self.removeDims,
                 'heading_enc': self.heading_enc,
                 'addSinCosTimeEnc': self.addSinCosTimeEnc,
-                'flattenTime': self.flattenTime
+                'flattenTime': self.flattenTime,
+                'aggregate_edges': self.aggregate_edges
             })
             p.start()
             processes.append(p)
@@ -367,10 +374,13 @@ class GraphsBuilder:
 
         # save metadata
         meta_dict = {
+            'n_node_temporal_features': 4 + (2 if self.heading_enc else 1) + (2 if self.addSinCosTimeEnc else 0),
+            'n_edge_features': 4 if self.aggregate_edges else 1,
             'frames_num': self.frames_num,
             'm_radius': self.m_radius,
             'sin_cos_time_enc': self.addSinCosTimeEnc,
             'vpos_rescaled_center': self.rscToCenter,
+            'aggregate_edges': self.aggregate_edges,
             'has_dims': not self.removeDims,
             'heading_encoded': self.heading_enc,
             'flattened_time': self.flattenTime,

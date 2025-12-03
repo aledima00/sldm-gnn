@@ -5,16 +5,16 @@ import torch.nn.functional as _F
 from typing import Literal as _Lit
 
 class GRUGAT(_nn.Module):
-    def __init__(self, dynamic_features_num, has_dims, gru_hidden_size=128,gru_num_layers=1, gat_edge_fnum:int|None=None,gat_inner_dims=[96, 96], gat_nheads=4, fc_dims=[50,50], out_dim=10, num_st_types=256, emb_dim=12,*, negative_slope=0.2, dropout=0.6):
+    def __init__(self, dynamic_features_num, has_dims, gru_hidden_size=128,gru_num_layers=1, gat_edge_fnum:int=0, gat_edge_aggregated:bool=True, gat_inner_dims=[96, 96], gat_nheads=4, fc_dims=[50,50], out_dim=10, num_st_types=256, emb_dim=12,*, negative_slope=0.2, dropout=0.6):
         super().__init__()
         
 
         assert len(gat_inner_dims) >= 1, "gat_inner_dims must contain at least one element"
         assert gat_nheads >= 1, "gat nheads must be at least 1"
-        assert gat_edge_fnum is None or gat_edge_fnum > 0, "gat_edge_fnum must be positive or None"
+        assert gat_edge_fnum >= 0, "gat_edge_fnum must be non-negative"
 
-        if gat_edge_fnum is None:
-            raise NotImplementedError("GAT without edge features is not implemented yet")
+        if not gat_edge_aggregated:
+            raise NotImplementedError("Currently only gat_edge_aggregated=True is supported")
 
         # 1. GRU layer to process dynamic features
         # x shape: [batch_vnum, framenum, feature_dim]

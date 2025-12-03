@@ -4,7 +4,7 @@ from torch_geometric.nn import SAGEConv, global_mean_pool, global_max_pool
 import torch.nn.functional as F
 
 class GraphSAGEGraphLevel(nn.Module):
-    def __init__(self, dynamic_features_num, has_dims, frames_num, hidden_dims=[128, 128], fcdims=[50,50], out_dim=10, num_st_types=256, emb_dim=12, dropout=0.1):
+    def __init__(self, dynamic_features_num, has_dims, frames_num, hidden_dims=[128, 128], fcdims=[50,50], out_dim=10, num_st_types=256, emb_dim=12, dropout=0.1, negative_slope=0.1):
         super().__init__()
 
         # 1 - embedding for station types
@@ -23,13 +23,15 @@ class GraphSAGEGraphLevel(nn.Module):
         # 3 - final fc layers
         ldims = [hidden_dims[-1]*2] + fcdims + [out_dim]
         self.fcs = nn.ModuleList([
-            nn.Sequential(
+            *[nn.Sequential(
                 nn.Linear(ldims[i], ldims[i+1]),
-                nn.ReLU(),
+                nn.LeakyReLU(negative_slope=negative_slope),
                 nn.Dropout(p=dropout)
-            ) for i in range(len(ldims)-1)
+            ) for i in range(len(ldims)-2)],
+            nn.Linear(ldims[-2], ldims[-1])
         ])
         self.dropout = dropout
+        self.negative_slope = negative_slope
 
     def forward(self, data):
         x, edge_index, edge_attr, xdims, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xdims, data.xsttype, data.batch
@@ -38,7 +40,7 @@ class GraphSAGEGraphLevel(nn.Module):
         for conv, norm in zip(self.convs, self.norms):
             x = conv(x, edge_index)
             x = norm(x)
-            x = F.relu(x)
+            x = F.leaky_relu(x, negative_slope=self.negative_slope)
             x = F.dropout(x, p=self.dropout, training=self.training)
         # graph level readout
         xmean = global_mean_pool(x, batch)
