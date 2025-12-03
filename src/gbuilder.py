@@ -146,7 +146,7 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             x = _np.concatenate([x[:,:,:3], headings_sin, headings_cos, x[:,:,4:]], axis=2)
 
         if addSinCosTimeEnc:
-            # TODO SHOULD I ORDER BY FRAME BEFORE DOING THIS??
+            # TODO:CHECK SHOULD I ORDER BY FRAME BEFORE DOING THIS??
             tsin_broadcast = _np.repeat(tsin, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             tcos_broadcast = _np.repeat(tcos, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             x = _np.concatenate([x, tsin_broadcast, tcos_broadcast], axis=2)
