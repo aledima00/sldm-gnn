@@ -65,6 +65,9 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
         raw_feats = pack_df[tot_fnames].to_numpy().reshape(-1, frames_num, tot_fnum)  # num_vehicles x num_frames x num_features
 
         x = raw_feats[:,:,:t_fnum] # temporal features
+        # set angles to rad
+        x[:,:,3] = _np.deg2rad( x[:,:,3] )
+
         xdims = raw_feats[:,0:1,t_fnum:stt_fidx] # static features (same for all frames)
         xsttype = raw_feats[:,0,stt_fidx]
 
@@ -140,6 +143,8 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             gdata_dict['edge_attr_list'] = edge_attr_list
 
         if heading_enc:
+            # FIXME not working concat - data are disrupted
+            raise NotImplementedError("Heading encoding must be fixed before use. Please run with `--no-heading-enc` option if running from cli or with `heading_enc=False` if using GraphsBuilder class.")
             # replace angle with 2 features of sin+cos heading encoding
             headings_sin = _np.sin(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
             headings_cos = _np.cos(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
