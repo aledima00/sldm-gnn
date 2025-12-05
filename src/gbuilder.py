@@ -26,6 +26,7 @@ def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
 
 
     # apply offsets
+    # TODO:CHECK - in all angle usage, check deg/rad consistency with input data
     x[:,:,0] = xs - (lengths / 2) * _np.cos(angles)
     x[:,:,1] = ys - (lengths / 2) * _np.sin(angles)
 
@@ -378,8 +379,15 @@ class GraphsBuilder:
         logproc.join()
         print(f"All graphs built and saved to {self.gpath}")
 
+        n_samples = self.labels_df['PackId'].nunique() if (hasattr(self, 'labels_df') and self.labels_df is not None) else len(list(self.gpath.glob('*.pt')))
+        n_positive = None
+        if hasattr(self, 'labels_df') and self.labels_df is not None:
+            n_positive = int((self.labels_df['MLBEncoded'] > 0).sum())
+        
         # save metadata
         meta_dict = {
+            'n_samples': n_samples,
+            'n_positive': n_positive,
             'n_node_temporal_features': 4 + (2 if self.heading_enc else 1) + (2 if self.addSinCosTimeEnc else 0),
             'n_edge_features': 4 if self.aggregate_edges else 1,
             'frames_num': self.frames_num,
