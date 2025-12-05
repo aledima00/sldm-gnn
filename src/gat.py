@@ -5,13 +5,14 @@ import torch.nn.functional as _F
 from typing import Literal as _Lit
 
 class GRUGAT(_nn.Module):
-    def __init__(self, dynamic_features_num, has_dims, gru_hidden_size=128,gru_num_layers=1, gat_edge_fnum:int=0, gat_edge_aggregated:bool=True, gat_inner_dims=[96, 96], gat_nheads=4, fc_dims=[50,50], out_dim=10, num_st_types=256, emb_dim=12,*, negative_slope=0.2, dropout=0.6):
+    def __init__(self, dynamic_features_num, has_dims, gru_hidden_size=128,gru_num_layers=1, gat_edge_fnum:int=None, gat_edge_aggregated:bool=True, gat_inner_dims=[96, 96], gat_nheads=4,fc_dims1=[128, 64], fc_dims2=[50,50], out_dim=10, num_st_types=256, emb_dim=12,*, negative_slope=0.2, dropout=0.6):
         super().__init__()
         
 
         assert len(gat_inner_dims) >= 1, "gat_inner_dims must contain at least one element"
         assert gat_nheads >= 1, "gat nheads must be at least 1"
-        assert gat_edge_fnum >= 0, "gat_edge_fnum must be non-negative"
+        assert gat_edge_fnum is None or gat_edge_fnum >= 0, "gat_edge_fnum must be non-negative or None"
+        self.gat_edge_fnum = gat_edge_fnum
 
         #TODO Implement additional edge-wise GRU to support non-aggregated edges case
         if not gat_edge_aggregated:
@@ -30,10 +31,22 @@ class GRUGAT(_nn.Module):
         self.st_emb = _nn.Embedding(num_st_types, emb_dim)
 
         # 3. concat all input features
-        in_dim = gru_hidden_size + (2 if has_dims else 0) + emb_dim
+        last_step_dims = gru_hidden_size + (2 if has_dims else 0) + emb_dim
 
-        # 4. GAT layers
-        gdims = [in_dim] + gat_inner_dims
+        # 4. fully connected layers before GAT
+        ldims1 = [last_step_dims] + fc_dims1
+        self.fc1s = _nn.ModuleList([
+            _nn.Sequential(
+                _nn.Linear(ldims1[i], ldims1[i+1]),
+                _nn.ReLU(),
+                _nn.Dropout(p=0.1)
+            ) for i in range(len(ldims1)-1)
+        ])
+        last_step_dims = ldims1[-1]
+
+
+        # 5. GAT layers
+        gdims = [last_step_dims] + gat_inner_dims
         self.convs = _nn.ModuleList([
             _GATv2Conv(
                 in_channels=gdims[i]*(1 if i==0 else gat_nheads),
@@ -50,12 +63,14 @@ class GRUGAT(_nn.Module):
             _nn.LayerNorm(gdims[i+1]*gat_nheads) for i in range(len(gdims)-1)
         ])
 
-        # 5. final fc layers
-        ldims = [gat_inner_dims[-1]*gat_nheads*2] + fc_dims + [out_dim]
-        self.fcs = _nn.ModuleList([
+        last_step_dims = gdims[-1]
+
+        # 6. final fc layers
+        ldims = [last_step_dims*gat_nheads*2] + fc_dims2 + [out_dim]
+        self.fc2s = _nn.ModuleList([
             *[ _nn.Sequential(
                 _nn.Linear(ldims[i], ldims[i+1]),
-                _nn.LeakyReLU(negative_slope=negative_slope),
+                _nn.ReLU(),
                 _nn.Dropout(p=dropout)
             ) for i in range(len(ldims)-2)],
             _nn.Linear(ldims[-2], ldims[-1])
@@ -74,17 +89,31 @@ class GRUGAT(_nn.Module):
         # shape [batch_vnum, gru_hidden_size]
 
         x = _torch.cat([hlast, xdims, st_embedded], dim=1)
-        for conv, norm in zip(self.convs, self.norms):
-            x = conv(x, edge_index, edge_attr)
-            x = norm(x)
-            x = _F.elu(x)
-            x = _F.dropout(x, p=self.dropout, training=self.training)
+
+        # pass through fc layers before GAT
+        for fc in self.fc1s:
+            x = fc(x)
+        
+
+
+        if self.gat_edge_fnum is not None:
+            for conv, norm in zip(self.convs, self.norms):
+                x = conv(x, edge_index, edge_attr)
+                x = norm(x)
+                x = _F.elu(x)
+                x = _F.dropout(x, p=self.dropout, training=self.training)
+        else:
+            for conv, norm in zip(self.convs, self.norms):
+                x = conv(x, edge_index)
+                x = norm(x)
+                x = _F.elu(x)
+                x = _F.dropout(x, p=self.dropout, training=self.training)
 
         xmean = _gmean_pool(x, batch)
         xmax = _gmax_pool(x, batch)
         x = _torch.cat([xmean, xmax], dim=1)
 
         # now fc layers
-        for fc in self.fcs:
+        for fc in self.fc2s:
             x = fc(x)
         return x
