@@ -20,11 +20,15 @@ colorama.init(autoreset=True)
 
 
 # general params
-EMB_DIM = 12
+EMB_DIM = 8
 NUM_POSSIBLE_STATION_TYPES = 256
 VERBOSE = False
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 DF_ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
+
+# ------------------- Data augmentation params -------------------
+TF_ROTATE = False
+TF_POS_NOISE = False
 POS_NOISE_STD = 0.1
 
 # ------------------- SAGE parameters -------------------
@@ -39,17 +43,18 @@ SAGE_LR = 0.005
 SAGE_WEIGHT_DECAY = 5e-4
 
 # ------------------- GRUGAT parameters -------------------
-GG_GRU_HIDDEN_SIZE = 96
+GG_GRU_HIDDEN_SIZE = 128
 GG_GRU_NUM_LAYERS = 1
-GG_GAT_HIDDEN_DIMS = [96,96]
-GG_GAT_NHEADS = 8
-GG_FCDIMS = []
-GG_DROPOUT = 0.05
-GG_NEGSLOPE = 0.1
+GG_FCDIMS1 = [64]
+GG_GAT_HIDDEN_DIMS = [32,32]
+GG_GAT_NHEADS = 2
+GG_FCDIMS2 = [32,16]
+GG_DROPOUT = 0.1
+GG_NEGSLOPE = 0.05
 # training params
-GG_EPOCHS = 10
+GG_EPOCHS = 100
 GG_BATCH_SIZE = 32
-GG_LR = 5e-4
+GG_LR = 1e-3
 GG_WEIGHT_DECAY = 5e-4
 
 # device
@@ -105,11 +110,14 @@ def main(inputdir,outdir,lbnum:int, model:str):
 
     # string with all params in exp format
     pfname = getPlotFname(model,lbnum, metadata)
+
+    transform = []
+    if TF_ROTATE:
+        transform.append( TFs.RandomRotate(metadata=metadata) )
+    if TF_POS_NOISE:
+        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD, metadata=metadata) )
     
-    transform = T.Compose([
-        TFs.RandomRotate(metadata=metadata),
-        TFs.AddNoise(target='pos', std=POS_NOISE_STD, metadata=metadata),
-    ])
+    transform = T.Compose(transform)
 
     # dataset and transforms
     ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
@@ -143,11 +151,12 @@ def runGruGat(ds:MapGraph,metadata:MetaData):
         has_dims=metadata.has_dims,
         gru_hidden_size=GG_GRU_HIDDEN_SIZE,
         gru_num_layers=GG_GRU_NUM_LAYERS,
+        fc_dims1=GG_FCDIMS1,
         gat_edge_fnum=metadata.n_edge_features,
         gat_edge_aggregated=metadata.aggregate_edges,
         gat_inner_dims=GG_GAT_HIDDEN_DIMS,
         gat_nheads = GG_GAT_NHEADS,
-        fc_dims=GG_FCDIMS,
+        fc_dims2=GG_FCDIMS2,
         out_dim=len(metadata.active_labels),
         num_st_types=NUM_POSSIBLE_STATION_TYPES,
         emb_dim=EMB_DIM,
@@ -169,7 +178,8 @@ def runGruGat(ds:MapGraph,metadata:MetaData):
         device=DEVICE,
         verbose=VERBOSE,
         progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels
+        active_labels=metadata.active_labels,
+        neg_over_pos_ratio=metadata.getNegOverPosRatio()
     )
     return (tot_tracc, tot_vacc)
 
@@ -201,7 +211,8 @@ def runSage(ds:MapGraph,metadata:MetaData):
         device=DEVICE,
         verbose=VERBOSE,
         progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels
+        active_labels=metadata.active_labels,
+        neg_over_pos_ratio=metadata.getNegOverPosRatio()
     )
     return (tot_tracc, tot_vacc)
 
