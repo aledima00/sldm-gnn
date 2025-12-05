@@ -12,8 +12,11 @@ class AddNoise:
         self.flattenedTime = metadata.flattened_time
     
     def __call__(self, data:_GData)->_GData:
-        pmsk = self.mask.unsqueeze(0).expand(data.x.shape[0],-1,-1) if not self.flattenedTime else self.mask.unsqueeze(0).expand(data.x.shape[0],-1)
-        data.x[pmsk] += _tch.randn_like(data.x[pmsk],device=data.x.device) * self.std
+        # TODO:CHECK this implementation
+        if self.flattenedTime:
+            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * self.std
+        else:
+            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
         return data
     
 class RemoveDimsFeatures:

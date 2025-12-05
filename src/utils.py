@@ -19,6 +19,8 @@ FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
 
 @_dc
 class MetaData:
+    n_samples:int
+    n_positive:int
     n_node_temporal_features:int
     n_edge_features:int
     frames_num:int
@@ -30,6 +32,12 @@ class MetaData:
     flattened_time:bool
     aggregate_edges:bool
     active_labels:list[int]
+
+    def getNegOverPosRatio(self) ->float:
+        if self.n_positive == 0:
+            raise ValueError("Number of positive samples is zero, cannot compute negative over positive ratio")
+        n_negative = self.n_samples - self.n_positive
+        return n_negative / self.n_positive
 
     @staticmethod
     def loadJson(path:_Path)->'MetaData':
@@ -67,14 +75,10 @@ class MetaData:
                     raise ValueError("Heading is not encoded with sin/cos, cannot get 'hcos' mask")
             case _:
                 raise ValueError(f"Unknown selector '{selector}' for getDataMask")
-
+        #TODO:CHECK check this implementation
         if self.flattened_time:
             # repeat mask for all time steps
             msk = msk.repeat(self.frames_num)
-        else:
-            # add time dimension
-            msk = msk.unsqueeze(0).expand(self.frames_num, -1)
-
         return msk
 
 def split_tr_ev_3to1(dataset:_GDataset)->tuple[_GDataset,_GDataset]:
@@ -90,10 +94,11 @@ def getLbName(label_idx:int,active_labels)->str:
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels):
+def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = _tch.nn.BCEWithLogitsLoss()
+    posw = _tch.tensor(neg_over_pos_ratio, device=device)
+    criterion = _tch.nn.BCEWithLogitsLoss(pos_weight=posw)
     tprint = _TabPrint(tab="   ", enabled=(progress_logging=='clilog'))
 
     act_labels_num = len(active_labels)
@@ -112,7 +117,8 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                 train_total_loss = 0
                 tot_mlb = 0
                 tot_correct = _tch.zeros((1,act_labels_num), device=device, dtype=_tch.long)
-                for batch in _tqdm(train_loader, desc="Training Batches", leave=False):
+                # TODO decide whether to use tqdm here or not
+                for i,batch in enumerate(_tqdm(train_loader, desc="Training Batches", leave=False)):
                     batch = batch.to(device)
                     optimizer.zero_grad()
                     logits = model(batch)
@@ -120,6 +126,13 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                     y = batch.y.float().view(batch.num_graphs, act_labels_num)
                     train_loss = criterion(logits, y)
                     train_loss.backward()
+                    # TODO remove dbg print
+                    if i==len(train_loader)-1:
+                        model.printGradInfo()
+                        # print num of positive and negative logits in last batch
+                        pos_logits = (logits >= 0).long().sum().item()
+                        neg_logits = (logits < 0).long().sum().item()
+                        tprint(f"Last Batch Logits: Pos={pos_logits}, Neg={neg_logits}")
                     train_total_loss += train_loss.item() * batch.num_graphs
                     optimizer.step()
 
@@ -170,10 +183,11 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
             tot_val_accuracy = tot_correct.sum().item() / (tot_mlb * act_labels_num)
             per_label_val_acc = (tot_correct.sum(dim=0).cpu().float().numpy() / tot_mlb).tolist()
             tprint(f"{_Fore.GREEN}{_Style.BRIGHT}Validation Accuracy: {tot_val_accuracy:.4f}{_Style.RESET_ALL}")
-            tprint(f"Per-Label Eval Accuracy:")
-            with tprint.tab:
-                for i, acc in enumerate(per_label_val_acc):
-                    tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
+            if verbose:
+                tprint(f"Per-Label Eval Accuracy:")
+                with tprint.tab:
+                    for i, acc in enumerate(per_label_val_acc):
+                        tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
         pl_tracc[:,epoch] = _np.array(per_label_train_acc)
         pl_vacc[:,epoch] = _np.array(per_label_val_acc)
         tot_tracc[:,epoch] = tot_train_accuracy
