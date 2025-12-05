@@ -13,6 +13,7 @@ import re
 from src.dataset import MapGraph
 from src.sage import GraphSAGEGraphLevel
 from src.gat import GRUGAT
+from src.grufc import GruFC
 import src.transforms as TFs
 from src.utils import train_model, split_tr_ev_3to1, MetaData
 
@@ -57,6 +58,18 @@ GG_BATCH_SIZE = 32
 GG_LR = 1e-3
 GG_WEIGHT_DECAY = 5e-4
 
+# ------------------- GRUFC parameters -------------------
+GF_GRU_HIDDEN_SIZE = 128
+GF_GRU_NUM_LAYERS = 1
+GF_FCDIMS = [64, 64, 32, 16]
+GF_DROPOUT = 0.1
+GF_NEGSLOPE = 0.05
+# training params
+GF_EPOCHS = 100
+GF_BATCH_SIZE = 32
+GF_LR = 1e-3
+GF_WEIGHT_DECAY = 1e-4
+
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -83,8 +96,11 @@ def getPlotFname(model:Lit['sage','gat'], lbnum:int, metadata:MetaData)->str:
         mstr = f"RUN_LB{lbnum}_SAGE_HDIMS{ 'x'.join([str(h) for h in SAGE_HIDDEN_DIMS])}_FCDIMS{ 'x'.join([str(f) for f in SAGE_FC_DIMS])}_EMB{EMB_DIM}_DRP{SAGE_DROPOUT:.1e}"
         pstr = f"EP{SAGE_EPOCHS}_BS{SAGE_BATCH_SIZE}_LR{SAGE_LR:.1e}_WD{SAGE_WEIGHT_DECAY:.1e}"
     elif model == 'gat':
-        mstr = f"RUN_LB{lbnum}_GRUGAT_GRUSZ{GG_GRU_HIDDEN_SIZE}x{GG_GRU_NUM_LAYERS}_EFN{metadata.n_edge_features}_GATHDIMS{'x'.join([str(h) for h in GG_GAT_HIDDEN_DIMS])}_GTNHDS{GG_GAT_NHEADS}_FCDIMS{'x'.join([str(f) for f in GG_FCDIMS])}_EMB{EMB_DIM}_DRP{GG_DROPOUT:.1e}"
+        mstr = f"RUN_LB{lbnum}_GRUGAT_GRUSZ{GG_GRU_HIDDEN_SIZE}x{GG_GRU_NUM_LAYERS}_LIN{'x'.join([str(f) for f in GG_FCDIMS1])}_EFN{metadata.n_edge_features}_GATHDIMS{'x'.join([str(h) for h in GG_GAT_HIDDEN_DIMS])}_GTNHDS{GG_GAT_NHEADS}_FCDIMS{'x'.join([str(f) for f in GG_FCDIMS2])}_EMB{EMB_DIM}_DRP{GG_DROPOUT:.1e}"
         pstr = f"EP{GG_EPOCHS}_BS{GG_BATCH_SIZE}_LR{GG_LR:.1e}_WD{GG_WEIGHT_DECAY:.1e}"
+    elif model == 'grufc':
+        mstr = f"RUN_LB{lbnum}_GRUFC_GRUSZ{GF_GRU_HIDDEN_SIZE}x{GF_GRU_NUM_LAYERS}_FCDIMS{'x'.join([str(f) for f in GF_FCDIMS])}_EMB{EMB_DIM}_DRP{GF_DROPOUT:.1e}"
+        pstr = f"EP{GF_EPOCHS}_BS{GF_BATCH_SIZE}_LR{GF_LR:.1e}_WD{GF_WEIGHT_DECAY:.1e}"
     else:
         raise ValueError(f"Unknown model type: {model}")
     tot_str = f"{mstr}__{pstr}"
@@ -95,7 +111,7 @@ def getPlotFname(model:Lit['sage','gat'], lbnum:int, metadata:MetaData)->str:
 @click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.argument('outdir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
-@click.option('-m', '--model', 'model', type=click.Choice(['sage','gat'], case_sensitive=False), required=True, prompt='Choose GNN model', help='GNN model to use')
+@click.option('-m', '--model', 'model', type=click.Choice(['sage','gat','grufc'], case_sensitive=False), required=True, prompt='Choose model', help='Model to use')
 def main(inputdir,outdir,lbnum:int, model:str):
 
     path = inputdir.resolve()
@@ -130,6 +146,8 @@ def main(inputdir,outdir,lbnum:int, model:str):
             runner = runSage
         case 'gat':
             runner = runGruGat
+        case 'grufc':
+            runner = runGruFc
         case _:
             raise ValueError(f"Unknown model type: {model}")
     
@@ -208,6 +226,39 @@ def runSage(ds:MapGraph,metadata:MetaData):
         epochs=SAGE_EPOCHS,
         lr=SAGE_LR,
         weight_decay=SAGE_WEIGHT_DECAY,
+        device=DEVICE,
+        verbose=VERBOSE,
+        progress_logging=PROGRESS_LOGGING,
+        active_labels=metadata.active_labels,
+        neg_over_pos_ratio=metadata.getNegOverPosRatio()
+    )
+    return (tot_tracc, tot_vacc)
+
+def runGruFc(ds:MapGraph,metadata:MetaData):
+    model = GruFC(
+        dynamic_features_num=metadata.n_node_temporal_features,
+        has_dims=metadata.has_dims,
+        gru_hidden_size=GF_GRU_HIDDEN_SIZE,
+        gru_num_layers=GF_GRU_NUM_LAYERS,
+        fc_dims=GF_FCDIMS,
+        out_dim=len(metadata.active_labels),
+        num_st_types=NUM_POSSIBLE_STATION_TYPES,
+        emb_dim=EMB_DIM,
+        negative_slope=GF_NEGSLOPE,
+        dropout=GF_DROPOUT
+    )
+    d_train,d_eval = psplit(ds)
+    # create data loaders
+    dl_train = GDL(d_train, batch_size=GF_BATCH_SIZE, shuffle=True)
+    dl_eval = GDL(d_eval, batch_size=GF_BATCH_SIZE, shuffle=True)
+
+    (_, tot_tracc),(_, tot_vacc) = train_model(
+        model,
+        dl_train,
+        dl_eval,
+        epochs=GF_EPOCHS,
+        lr=GF_LR,
+        weight_decay=GF_WEIGHT_DECAY,
         device=DEVICE,
         verbose=VERBOSE,
         progress_logging=PROGRESS_LOGGING,
