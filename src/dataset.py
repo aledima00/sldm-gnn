@@ -9,32 +9,6 @@ from tqdm.auto import tqdm as _tqdm
 from .labels import LabelsEnum as _LE
 from .utils import MetaData as _MD
 
-def _statsToMuSigma(sum_x:_tch.Tensor, sum_x2:_tch.Tensor, tot_cnt:int, frames_num:int=20, flattenedTime:bool=False)->tuple[_tch.Tensor,_tch.Tensor]:
-    if flattenedTime:
-        nfeats = sum_x.size(1) // frames_num
-        sxt = _tch.zeros((1,nfeats), device=sum_x.device)
-        sxt2 = _tch.zeros((1,nfeats), device=sum_x.device)
-
-        for i in range(frames_num):
-            sxt += sum_x[:,i*nfeats:(i+1)*nfeats]
-            sxt2 += sum_x2[:,i*nfeats:(i+1)*nfeats]
-
-        tcnt = tot_cnt * frames_num
-        mu_t = sxt / tcnt
-        sigma_t = ((sxt2 / tcnt) - (mu_t ** 2)).sqrt()
-
-        # repeat for each time frame
-        mu = mu_t.repeat(1,frames_num)
-        sigma = sigma_t.repeat(1,frames_num)
-        return mu, sigma
-    else:
-        # already have time dimension, so sum over it
-        sxt = sum_x.sum(dim=1,keepdim=True)
-        sxt2 = sum_x2.sum(dim=1,keepdim=True)
-        tcnt = tot_cnt * frames_num
-        mu = sxt / tcnt
-        sigma = ((sxt2 / tcnt) - (mu ** 2)).sqrt()
-        return mu, sigma
 
 class MapGraph(_GDataset):
     pos_rescaling_opt_type = _Lit['none', 'center']
@@ -45,7 +19,6 @@ class MapGraph(_GDataset):
         
         self.frames_num = metadata.frames_num
         self.hasDims = metadata.has_dims
-        self.flattenedTime = metadata.flattened_time
         self.active_labels = set(metadata.active_labels)
         self.heading_encoded = metadata.heading_encoded
         self.time_encoded = metadata.sin_cos_time_enc
@@ -99,10 +72,12 @@ class MapGraph(_GDataset):
         if self.transform:
             graph = self.transform(graph)
         if self.normalizeZScore:
-            # z-score normalization
-            graph.x = (graph.x - self.mu["x"]) / self.sigma["x"]
+            # z-score normalization on features from 0 to -1 (excluding presence mask)
+            graph.x[:,:,:-1] = (graph.x[:,:,:-1] - self.mu["x"]) / self.sigma["x"]
             if self.hasDims:
                 graph.xdims = (graph.xdims - self.mu["xdims"]) / self.sigma["xdims"]
+
+        #TODO - add flattening option here in case is needed, only as postproc
         return graph
     
     @property
@@ -122,32 +97,47 @@ class MapGraph(_GDataset):
         return RawDataContext(self)
     
     def getMuSigma(self):
-        nfeats = 4 + (2 if self.heading_encoded else 1) + (2 if self.time_encoded else 0)
-        shapex = (1,self.frames_num*nfeats) if self.flattenedTime else (1,self.frames_num,nfeats)
-
-        sum_x = _tch.zeros(shapex,device=self.device,dtype=_tch.float)
-        sum_x2 = _tch.zeros(shapex,device=self.device,dtype=_tch.float)
+        nfeats = 3 + (2 if self.heading_encoded else 1) + (2 if self.time_encoded else 0)
+        # x,y,speed, heading(encoded?), (time enc?) 
+        # presence mask not included in zscore stats compute, used as mask also there
+        
+        # reduce over vehicles and time
+        sum_x = _tch.zeros((1,1,nfeats),device=self.device,dtype=_tch.float)
+        sum_x2 = _tch.zeros((1,1,nfeats),device=self.device,dtype=_tch.float)
         
         if self.hasDims:
             sum_xdims = _tch.zeros((1,2), device=self.device)
             sum_xdims2 = _tch.zeros((1,2), device=self.device)
 
+        tot_cnt = 0
         vcnt = 0
 
         with self.usingRawData:
             for i in _tqdm(range(self.len()), desc="Computing dataset mean and std"):
                 g = self.innerGet(i) # get raw graph
 
-                sum_x += g.x.sum(dim=0,keepdim=True)
-                sum_x2 += (g.x ** 2).sum(dim=0,keepdim=True)
+                for vi in range(g.x.size(0)):
+                    # sum faetures where presence mask is true
+                    gv = g.x[vi:vi+1,:,:]
+                    pmask = gv[0,:, -1] > 0.5  # presence mask
+                    gv = gv[:,pmask,:-1] # exclude presence mask from stats
+
+                    # sum over time
+                    sum_x += gv.sum(dim=1,keepdim=True)
+                    sum_x2 += (gv ** 2).sum(dim=1,keepdim=True)
+                    tot_cnt += pmask.sum().item() # count of frames for this vehicle
                 
                 if self.hasDims:
-                    sum_xdims += g.xdims.sum(dim=0,keepdim=True)
-                    sum_xdims2 += (g.xdims ** 2).sum(dim=0,keepdim=True)
-                vcnt += g.x.size(0)
+                    xdims = g.xdims
+                    sum_xdims += xdims.sum(dim=0,keepdim=True)
+                    sum_xdims2 += (xdims ** 2).sum(dim=0,keepdim=True)
+                    vcnt += g.xdims.size(0)
+
 
         if self.hasDims:
             mu_xdims = sum_xdims / vcnt
             sigma_xdims = ((sum_xdims2 / vcnt) - (mu_xdims ** 2)).sqrt()
-        mu_x, sigma_x = _statsToMuSigma(sum_x, sum_x2, vcnt, self.frames_num, flattenedTime=self.flattenedTime)
+
+        mu_x = sum_x / tot_cnt
+        sigma_x = ((sum_x2 / tot_cnt) - (mu_x ** 2)).sqrt()    
         return ({"x": mu_x, "xdims": mu_xdims if self.hasDims else None}, {"x": sigma_x, "xdims": sigma_xdims if self.hasDims else None})

@@ -9,14 +9,10 @@ class AddNoise:
     def __init__(self,target:_FMType, std:float, metadata:_MD):
         self.std = std
         self.mask = metadata.getDataMask(target)
-        self.flattenedTime = metadata.flattened_time
     
     def __call__(self, data:_GData)->_GData:
         # TODO:CHECK this implementation
-        if self.flattenedTime:
-            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * self.std
-        else:
-            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
+        data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
         return data
     
 class RemoveDimsFeatures:
@@ -32,7 +28,6 @@ class RemoveDimsFeatures:
     
 class RandomRotate:
     def __init__(self, metadata:_MD):
-        self.flattenedTime = metadata.flattened_time
         self.num_frames = metadata.frames_num
         self.posMask = metadata.getDataMask('pos')
         self.hMask = metadata.getDataMask('heading')
@@ -52,43 +47,21 @@ class RandomRotate:
             [sin_theta, cos_theta]
         ], device=dev)
 
-        # TODO:CHECK: why in this implementation masks are not required w.r.t. other transforms?
-        if self.flattenedTime:
-            # extract positions (still temporal sequence)
-            positions = data.x[:,self.posMask]
-
-            # rotate positions
-            for i in range(self.num_frames):
-                coords = positions[:,i*2:(i*2)+2]  # shape [num_nodes, 2]
-                rotcoords = coords @ RotMat.T  # shape [num_nodes, 2]
-                positions[:,i*2:(i*2)+2] = rotcoords
-            data.x[:,self.posMask] = positions
-        else:
-            # extract positions
-            positions = data.x[:,:,self.posMask]
-            # rotate positions
-            positions = positions @ RotMat.T  # shape [num_nodes, num_features, 2]
-            data.x[:,:,self.posMask] = positions
+        # extract positions
+        positions = data.x[:,:,self.posMask]
+        # rotate positions
+        positions = positions @ RotMat.T  # shape [num_nodes, num_features, 2]
+        data.x[:,:,self.posMask] = positions
 
         # adjust headings
         if self.headingEncoded:
-            if self.flattenedTime:
-                hsin = data.x[:,self.hSinMask]
-                hcos = data.x[:,self.hCosMask]
-                data.x[:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
-                data.x[:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
-            else:
-                hsin = data.x[:,:,self.hSinMask]
-                hcos = data.x[:,:,self.hCosMask]
-                data.x[:,:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
-                data.x[:,:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
+            hsin = data.x[:,:,self.hSinMask]
+            hcos = data.x[:,:,self.hCosMask]
+            data.x[:,:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
+            data.x[:,:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
         else:
-            if self.flattenedTime:
-                headings = data.x[:,self.hMask]
-                data.x[:,self.hMask] = (headings + theta) % (2 * _tch.pi)
-            else:
-                headings = data.x[:,:,self.hMask]
-                data.x[:,:,self.hMask] = (headings + theta) % (2 * _tch.pi)
+            headings = data.x[:,:,self.hMask]
+            data.x[:,:,self.hMask] = (headings + theta) % (2 * _tch.pi)
         
 
         return data

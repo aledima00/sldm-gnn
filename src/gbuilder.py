@@ -32,7 +32,7 @@ def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, flattenTime:bool=False, aggregate_edges:bool=True)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True)->_GData:
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
@@ -151,13 +151,12 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             headings_cos = _np.cos(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
             x = _np.concatenate([x[:,:,:3], headings_sin, headings_cos, x[:,:,4:]], axis=2)
 
+        #TODO:CHECK if this has to be removed. Otherwise, still place it before the presence mask.
         if addSinCosTimeEnc:
             # TODO:CHECK SHOULD I ORDER BY FRAME BEFORE DOING THIS??
             tsin_broadcast = _np.repeat(tsin, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             tcos_broadcast = _np.repeat(tcos, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
             x = _np.concatenate([x, tsin_broadcast, tcos_broadcast], axis=2)
-        if flattenTime:
-            x = x.reshape(-1, t_fnum_final*frames_num)  # flatten over time dimension
         gdata_dict['x'] = _tch.tensor(x, dtype=_tch.float, device='cpu')
         
         if mlb is not None:
@@ -200,7 +199,7 @@ class GraphsBuilder:
     labels_df: _pd.DataFrame # dataframe of labels
     vinfo_df: _pd.DataFrame # dataframe of vehicle info
 
-    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, flatten_time:bool=False, aggregate_edges:bool=True, active_labels:list[int]=None):
+    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, active_labels:list[int]=None):
 
         self.dirpath = dirpath.resolve()
         self.gpath = self.dirpath / '.graphs' # output graphs path
@@ -212,7 +211,6 @@ class GraphsBuilder:
         self.rscToCenter = rscToCenter
         self.removeDims = removeDims
         self.heading_enc = heading_enc
-        self.flattenTime = flatten_time
         self.aggregate_edges = aggregate_edges
 
         self.xpath = self.dirpath / 'packs.parquet'
@@ -303,13 +301,13 @@ class GraphsBuilder:
         Processes the packs and saves them as graph data files.
         Graphs are saved in the directory specified by self.gpath.
         Format of saved data is:
-        - `.x`: Node feature matrix, of shape [num_vehicles, num_frames, *NTF*] or [num_vehicles, num_frames * NTF] if flattenTime is True.
+        - `.x`: Node feature matrix, of shape [num_vehicles, num_frames, *NTF*].
         - `.xdims`: Static feature matrix, of shape [num_vehicles, 2] (if hasDims is True)
         - `.xsttype`: Static feature vector of vehicle types, of shape [num_vehicles]
-        - `.edge_index`: Edge index tensor, of shape [2, num_edges] (if flattenTime is True)
-        - `.edge_attr`: Edge attribute tensor, of shape [num_edges, 1] (if flattenTime is True)
-        - `.edge_index_list`: List of edge index tensors, one per frame (if flattenTime is False)
-        - `.edge_attr_list`: List of edge attribute tensors, one per frame (if flattenTime is False)
+        - `.edge_index`: Edge index tensor, of shape [2, num_edges] (if aggregateEdges is True)
+        - `.edge_attr`: Edge attribute tensor, of shape [num_edges, 1] (if aggregateEdges is True)
+        - `.edge_index_list`: List of edge index tensors, one per frame (if aggregateEdges is False)
+        - `.edge_attr_list`: List of edge attribute tensors, one per frame (if aggregateEdges is False)
         - `.y`: Multi-label binary vector of shape [num_active_labels] (if labels are present)
 
         Note that featues used in nodes are:
@@ -343,7 +341,6 @@ class GraphsBuilder:
                 'removeDims': self.removeDims,
                 'heading_enc': self.heading_enc,
                 'addSinCosTimeEnc': self.addSinCosTimeEnc,
-                'flattenTime': self.flattenTime,
                 'aggregate_edges': self.aggregate_edges
             })
             p.start()
@@ -397,7 +394,6 @@ class GraphsBuilder:
             'aggregate_edges': self.aggregate_edges,
             'has_dims': not self.removeDims,
             'heading_encoded': self.heading_enc,
-            'flattened_time': self.flattenTime,
             'active_labels': self.active_labels
         }
         with open(self.gpath / 'metadata.json', 'w', encoding='utf-8') as metafile:

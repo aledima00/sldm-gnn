@@ -29,7 +29,6 @@ class MetaData:
     vpos_rescaled_center:bool
     has_dims:bool
     heading_encoded:bool
-    flattened_time:bool
     aggregate_edges:bool
     active_labels:list[int]
 
@@ -76,9 +75,6 @@ class MetaData:
             case _:
                 raise ValueError(f"Unknown selector '{selector}' for getDataMask")
         #TODO:CHECK check this implementation
-        if self.flattened_time:
-            # repeat mask for all time steps
-            msk = msk.repeat(self.frames_num)
         return msk
 
 def split_tr_ev_3to1(dataset:_GDataset)->tuple[_GDataset,_GDataset]:
