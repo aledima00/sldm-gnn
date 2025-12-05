@@ -46,11 +46,11 @@ class MapGraph(_GDataset):
         self.frames_num = metadata.frames_num
         self.hasDims = metadata.has_dims
         self.flattenedTime = metadata.flattened_time
-        self.active_labels = metadata.active_labels
+        self.active_labels = set(metadata.active_labels)
         self.heading_encoded = metadata.heading_encoded
         self.time_encoded = metadata.sin_cos_time_enc
         if self.active_labels is None:
-            self.active_labels = [l.value for l in _LE]
+            self.active_labels = set([l.value for l in _LE])
 
         self.dirpath = graphs_dirpath.resolve()
 
@@ -67,19 +67,35 @@ class MapGraph(_GDataset):
     
     def get(self, idx):
         return self.innerGet(idx)
+    
+    def _mapLabelToDenseTensor(self, y:_tch.Tensor):
+        #TODO:CHECK this implementation for possible optimizations
+        if max(self.active_labels) >= y.size(0) or min(self.active_labels) < 0:
+            raise ValueError(f"Active labels contain invalid label indices for y of size {y.size(0)}: {self.active_labels}")
+        if len(self.active_labels) < y.size(0):
+            # adjust y to only active labels
+            new_y = _tch.zeros((len(self.active_labels)), dtype=y.dtype)
+            for i,c in enumerate(self.active_labels):
+                new_y[i] = y[c]
+            return new_y
+        else:
+            return y
+
+    def getRawByPid(self,pid:int):
+        fname = (self.dirpath / f"pack_{pid}.pt").resolve()
+        if not fname.exists():
+            raise FileNotFoundError(f"Graph file for pack id {pid} not found at path: {fname}")
+        with safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage]):
+            graph:_GData = _tch.load(fname, map_location=self.device)
+            if graph.y is not None and self.active_labels is not None:
+                graph.y = self._mapLabelToDenseTensor(graph.y)
+        return graph
 
     def innerGet(self,idx):
         with safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage]):
             graph:_GData = _tch.load(self.paths[idx], map_location=self.device)
             if graph.y is not None and self.active_labels is not None:
-                 if max(self.active_labels) > graph.y.size(0)-1:
-                    raise ValueError(f"Max Active label index {max(self.active_labels)} exceeds available labels in graph.y (TOT:{graph.y.size(0)}) for graph idx {idx}")
-                 if len(self.active_labels) != graph.y.size(0):
-                    # adjust y to only active labels
-                    new_y = _tch.zeros((len(self.active_labels)), dtype=graph.y.dtype)
-                    for i,c in enumerate(self.active_labels):
-                        new_y[i] = graph.y[c]
-                    graph.y = new_y
+                graph.y = self._mapLabelToDenseTensor(graph.y)
         if self.transform:
             graph = self.transform(graph)
         if self.normalizeZScore:
