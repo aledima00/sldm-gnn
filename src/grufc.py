@@ -38,6 +38,26 @@ class GruFC(_nn.Module):
         # 5. output layer
         self.linout = _nn.Linear(ldims[-1], out_dim)
 
+        self.init_weights()
+
+    def init_weights(self):
+        # init GRU with xavier uniform for ih, orthogonal for hh and zeros for biases
+        for name, param in self.gru.named_parameters():
+            if 'weight_ih' in name:
+                _nn.init.xavier_uniform_(param.data)
+            elif 'weight_hh' in name:
+                _nn.init.orthogonal_(param.data)
+            elif 'bias' in name:
+                _nn.init.zeros_(param.data)
+
+        # init linear layers with kaiming uniform
+        for fc in self.fcs:
+            # linear - relu - dropout
+            _nn.init.kaiming_uniform_(fc[0].weight, nonlinearity='relu')
+            _nn.init.zeros_(fc[0].bias)
+        _nn.init.kaiming_uniform_(self.linout.weight, nonlinearity='linear')
+        _nn.init.zeros_(self.linout.bias)
+
     def forward(self, data):
         x, edge_index, edge_attr, xdims, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xdims, data.xsttype, data.batch
         # 0. embed station types
