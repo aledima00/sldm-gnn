@@ -189,3 +189,11 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         tot_tracc[:,epoch] = tot_train_accuracy
         tot_vacc[:,epoch] = tot_val_accuracy
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc)
+
+def dataFlattener(data):
+    """
+    Flattens temporal dimension, bringing samples from shape [vehicles/nodes/batches, frames, features] to [vehicles/nodes/batches, frames*features]
+    """ 
+    #TODO - try using this function
+    data.x = data.x.flatten(start_dim=1)
+    return data
