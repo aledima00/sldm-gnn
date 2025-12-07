@@ -3,7 +3,7 @@ import torch.nn as _nn
 from torch_geometric.nn import global_mean_pool as _gmean_pool, global_max_pool as _gmax_pool
 from typing import Literal as _Lit
 
-from .sageblock import SageBlock as _SageBlock
+from .blocks.sageblock import SageBlock as _SageBlock
 
 class GruSage(_nn.Module):
     def __init__(self, dynamic_features_num:int, has_dims:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double'):
@@ -81,7 +81,7 @@ class GruSage(_nn.Module):
         # 2 - process dynamic features with GRU
         # x shape: [batch_vnum, framenum, feature_dim]
         gru_out, hlast = self.gru(x)
-        x = hlast[-1] # take last hidden state
+        x = hlast[-1,:,:] # take last hidden state
 
         # 3 - concat all input features
         x = _torch.cat([x, xdims,st_embedded], dim=1)
