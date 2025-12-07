@@ -6,7 +6,7 @@ from typing import Literal as _Lit
 from .blocks.gatblock import GATv2Block as _Gatv2Block
 
 class GRUGAT(_nn.Module):
-    def __init__(self, dynamic_features_num:int, has_dims:bool, frames_num:int,emb_dim:int, gru_hidden_size:int,gru_num_layers:int,fc1dims:list[int], gat_edge_fnum:int|None, gat_edge_aggregated:bool, gat_inner_dims:list[int], gat_nheads:int, fc2dims:list[int], out_dim:int=1, num_st_types:int=256, *, dropout:float|None=None, negative_slope:float|None=None, gat_concat:bool=True, global_pooling:_Lit['mean', 'max','double']='double'):
+    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int,emb_dim:int, gru_hidden_size:int,gru_num_layers:int,fc1dims:list[int], gat_edge_fnum:int|None, gat_inner_dims:list[int], gat_nheads:int, fc2dims:list[int], out_dim:int=1, num_st_types:int=256, *, dropout:float|None=None, negative_slope:float|None=None, gat_concat:bool=True, global_pooling:_Lit['mean', 'max','double']='double'):
         super().__init__()
         
 
@@ -18,8 +18,8 @@ class GRUGAT(_nn.Module):
         self.gat_edge_fnum = gat_edge_fnum
 
         #TODO Implement additional edge-wise GRU to support non-aggregated edges case
-        if not gat_edge_aggregated:
-            raise NotImplementedError("Currently only gat_edge_aggregated=True is supported")
+        if not has_aggregated_edges:
+            raise NotImplementedError("Currently only has_aggregated_edges=True is supported")
 
         # 1. embedding for station types
         self.st_emb = _nn.Embedding(num_st_types, emb_dim)
@@ -36,6 +36,7 @@ class GRUGAT(_nn.Module):
         
         # 3. concat all input features
         last_step_dims = gru_hidden_size + (2 if has_dims else 0) + emb_dim
+        self.hasdims = has_dims
 
         # 4. fully connected layers before GAT
         ldims1 = [last_step_dims] + fc1dims
@@ -86,7 +87,7 @@ class GRUGAT(_nn.Module):
 
         self.dropout = dropout
         self.negative_slope = negative_slope
-        self.init_weights()
+        # self.init_weights()
 
     def init_weights(self):
         # initialize GRU params
@@ -125,7 +126,7 @@ class GRUGAT(_nn.Module):
 
         
     def forward(self, data):
-        x, edge_index, edge_attr, xdims, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xdims, data.xsttype, data.batch
+        x, edge_index, edge_attr, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xsttype, data.batch
 
         # 1 - embedding for station types
         st_embedded:_torch.Tensor = self.st_emb(xsttype)
@@ -138,7 +139,11 @@ class GRUGAT(_nn.Module):
         # shape [batch_vnum, gru_hidden_size]
 
         # 3 - concat all input features
-        x = _torch.cat([x, xdims, st_embedded], dim=1)
+        if self.hasdims:
+            xdims = data.xdims
+            x = _torch.cat([x, xdims, st_embedded], dim=1)
+        else:
+            x = _torch.cat([x, st_embedded], dim=1)
 
         # 4 - fc layers before GAT
         for fc in self.fc1s:
