@@ -32,7 +32,7 @@ def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, addSinCosTimeEnc:bool=False, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, flatten_time_as_graphs:bool=False)->_GData:
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
@@ -41,12 +41,8 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
 
     t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
     t_fnum = len(t_fnames)
-    t_fnum_final = t_fnum + (2 if addSinCosTimeEnc else 0) + (1 if heading_enc else 0)
-    # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag,(tsin,tcos)]
-    if addSinCosTimeEnc:
-        # prepare once sin/cos time encodings
-        tsin = _np.sin(2 * _np.pi * _np.arange(frames_num) / frames_num).reshape(1, frames_num, 1)
-        tcos = _np.cos(2 * _np.pi * _np.arange(frames_num) / frames_num).reshape(1, frames_num, 1)
+    t_fnum_final = t_fnum + (1 if heading_enc else 0)
+    # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag]
 
     st_fnames = ['width','length','stType']
     st_fnum = len(st_fnames)
@@ -58,6 +54,7 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
 
     item = data_src_queue.get()
     while item is not None:
+        gdata_dict = dict()
         pack_id, pack_df, mlb = item
 
         # add static features from vinfo
@@ -74,18 +71,16 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
 
         if rscToCenter:
             x = rescaleToCenter(x, xdims)
-
-        gdata_dict = {
-            'xsttype': _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
-        }
+        x  = _tch.tensor(x, dtype=_tch.float, device='cpu')
+        xsttype = _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
 
         if not removeDims:
             # remove width and length (first 2 columns) from static features
             xdims = xdims.reshape(xdims.shape[0], -1)  # num_vehicles x num_static_features
-            gdata_dict['xdims'] = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
+            xdims = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
         
         
-        if aggregate_edges:
+        if aggregate_edges and (not flatten_time_as_graphs):
             # edge index construction based on distance of trajectories
             ## min distance used for threshold
             ## inverse of avg distance used for edge values
@@ -119,8 +114,9 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
             gdata_dict['edge_attr'] = _tch.tensor(edge_attr_list, dtype=_tch.float)
         else:
             # all parameters are per-frame, so edge_index and edge_attr are computed per-frame and concatenated in lists
-            edge_index_list = []
-            edge_attr_list = []
+            edge_index_all = []
+            edge_attr_all = []
+            edge_frame_ptrs = [0]
             num_vehicles = x.shape[0]
             for f in range(frames_num):
                 eil_internal_frame = []
@@ -138,26 +134,52 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
                             if dist <= m_radius:
                                 eil_internal_frame.append([i,j])
                                 eal_internal_frame.append([1.0 / (dist + 1e-6)])  # avoid div by zero
-                edge_index_list.append(_tch.tensor(eil_internal_frame, dtype=_tch.long).t().contiguous())
-                edge_attr_list.append(_tch.tensor(eal_internal_frame, dtype=_tch.float))
-            gdata_dict['edge_index_list'] = edge_index_list
-            gdata_dict['edge_attr_list'] = edge_attr_list
+                edge_index_all.append(_tch.tensor(eil_internal_frame, dtype=_tch.long).t().contiguous())
+                edge_attr_all.append(_tch.tensor(eal_internal_frame, dtype=_tch.float))
+                edge_frame_ptrs.append(edge_frame_ptrs[-1] + len(eil_internal_frame))
+                #TODO:CHECK check usage of edge_frame_ptrs in models that exploits edges
+            gdata_dict['edge_index_all'] = _tch.cat(edge_index_all, dim=1)
+            gdata_dict['edge_attr_all'] = _tch.cat(edge_attr_all, dim=0)
+            gdata_dict['edge_frame_ptrs'] = _tch.tensor(edge_frame_ptrs, dtype=_tch.long)
 
         if heading_enc:
-            # FIXME not working concat - data are disrupted
-            raise NotImplementedError("Heading encoding must be fixed before use. Please run with `--no-heading-enc` option if running from cli or with `heading_enc=False` if using GraphsBuilder class.")
             # replace angle with 2 features of sin+cos heading encoding
-            headings_sin = _np.sin(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
-            headings_cos = _np.cos(x[:,:,3:4])  # (num_vehicles, num_frames, 1)
-            x = _np.concatenate([x[:,:,:3], headings_sin, headings_cos, x[:,:,4:]], axis=2)
+            h = x[:,:,3:4]
+            hsin = _tch.sin(h)  # (num_vehicles, num_frames, 1)
+            hcos = _tch.cos(h)  # (num_vehicles, num_frames, 1)
+            x = _tch.cat([x[:,:,:3], hsin, hcos, x[:,:,4:]], dim=2)
+        
+        
+        if flatten_time_as_graphs:
+            #TODO:CHECK control this implementation and evaluate if pad one-zero-node graphs for empty frames
+            # reshape x to (vehicles_frames, features)
+            node_frame_ptrs = [0]
+            for f in range(frames_num):
+                xpf = x[:,f,-1]  # PresenceFlag
+                # filter data
+                xf = x[xpf > 0.5, f, :-1] # filter present vehicles and remove PresenceFlag
+                xdimsf = xdims[xpf > 0.5, :] if not removeDims else None
+                xsttypef = xsttype[xpf > 0.5]
 
-        #TODO:CHECK if this has to be removed. Otherwise, still place it before the presence mask.
-        if addSinCosTimeEnc:
-            # TODO:CHECK SHOULD I ORDER BY FRAME BEFORE DOING THIS??
-            tsin_broadcast = _np.repeat(tsin, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
-            tcos_broadcast = _np.repeat(tcos, x.shape[0], axis=0)  # (num_vehicles, num_frames, 1)
-            x = _np.concatenate([x, tsin_broadcast, tcos_broadcast], axis=2)
-        gdata_dict['x'] = _tch.tensor(x, dtype=_tch.float, device='cpu')
+                if f == 0:
+                    xcat = xf
+                    xdimscat = xdimsf
+                    xsttypecat = xsttypef
+                else:
+                    xcat = _tch.cat([xcat, xf], dim=0)
+                    if not removeDims:
+                        xdimscat = _tch.cat([xdimscat, xdimsf], dim=0)
+                    xsttypecat = _tch.cat([xsttypecat, xsttypef], dim=0)
+                node_frame_ptrs.append(xcat.shape[0])
+            x = xcat
+            xdims = xdimscat
+            xsttype = xsttypecat
+            gdata_dict['node_frame_ptrs'] = _tch.tensor(node_frame_ptrs, dtype=_tch.long)
+        
+        gdata_dict['x'] = x
+        gdata_dict['xsttype'] = xsttype
+        if not removeDims:
+            gdata_dict['xdims'] = xdims
         
         if mlb is not None:
             # labels are stored as bitmask in an integer
@@ -189,7 +211,6 @@ class GraphsBuilder:
     gpath: _Path  # path to output graphs directory
     frames_num: int # number of frames per pack
     m_radius: float # threshold radius for edge connection
-    addSinCosTimeEnc: bool # whether to add sin/cos time encoding features
     rscToCenter: bool # whether to rescale coordinates to vehicle center
     removeDims: bool # whether to remove vehicle dimension features
     xpath: _Path # path to packs.parquet
@@ -199,7 +220,7 @@ class GraphsBuilder:
     labels_df: _pd.DataFrame # dataframe of labels
     vinfo_df: _pd.DataFrame # dataframe of vehicle info
 
-    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, addSinCosTimeEnc:bool=True, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, active_labels:list[int]=None):
+    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, rscToCenter:bool=False, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, flatten_time_as_graphs:bool=False, active_labels:list[int]=None):
 
         self.dirpath = dirpath.resolve()
         self.gpath = self.dirpath / '.graphs' # output graphs path
@@ -207,10 +228,10 @@ class GraphsBuilder:
         self.frames_num = frames_num
         self.m_radius = m_radius
 
-        self.addSinCosTimeEnc = addSinCosTimeEnc
         self.rscToCenter = rscToCenter
         self.removeDims = removeDims
         self.heading_enc = heading_enc
+        self.flatten_time_as_graphs = flatten_time_as_graphs
         self.aggregate_edges = aggregate_edges
 
         self.xpath = self.dirpath / 'packs.parquet'
@@ -306,16 +327,16 @@ class GraphsBuilder:
         - `.xsttype`: Static feature vector of vehicle types, of shape [num_vehicles]
         - `.edge_index`: Edge index tensor, of shape [2, num_edges] (if aggregateEdges is True)
         - `.edge_attr`: Edge attribute tensor, of shape [num_edges, 1] (if aggregateEdges is True)
-        - `.edge_index_list`: List of edge index tensors, one per frame (if aggregateEdges is False)
-        - `.edge_attr_list`: List of edge attribute tensors, one per frame (if aggregateEdges is False)
+        - `.edge_index_all`: Frame-based concatenation (dim=1) of edge index tensors, one per frame (if aggregateEdges is False)
+        - `.edge_attr_all`: Frame-based concatenation (dim=0) of edge attribute tensors, one per frame (if aggregateEdges is False)
+        - `.edge_frame_ptrs`: Tensor of edge frame pointers of shape [NFrames+1] (if aggregateEdges is False or flattenTimeAsGraphs is True)
+        - `.node_frame_ptrs`: Tensor of node frame pointers of shape [NFrames+1] (if flattenTimeAsGraphs is True)
         - `.y`: Multi-label binary vector of shape [num_active_labels] (if labels are present)
 
         Note that featues used in nodes are:
-        - Temporal features per vehicle per frame (*NTF*): [X, Y, Speed, (HeadingSin, HeadingCos) | Angle, PresenceFlag, (tsin, tcos)]
-            - *NTF* = 5 if heading_enc is False and addSinCosTimeEnc is False
-            - *NTF* = 6 if heading_enc is True and addSinCosTimeEnc is False
-            - *NTF* = 7 if heading_enc is False and addSinCosTimeEnc is True
-            - *NTF* = 8 if heading_enc is True and addSinCosTimeEnc is True
+        - Temporal features per vehicle per frame (*NTF*): [X, Y, Speed, (HeadingSin, HeadingCos) | Angle, PresenceFlag]
+            - *NTF* = 5 if heading_enc is False
+            - *NTF* = 6 if heading_enc is True
         """
         nprocs = _mp.cpu_count() // 2
         print(f"Processing and Saving packs as Graphs, using {nprocs} processes...")
@@ -340,7 +361,7 @@ class GraphsBuilder:
                 'rscToCenter': self.rscToCenter,
                 'removeDims': self.removeDims,
                 'heading_enc': self.heading_enc,
-                'addSinCosTimeEnc': self.addSinCosTimeEnc,
+                'flatten_time_as_graphs': self.flatten_time_as_graphs,
                 'aggregate_edges': self.aggregate_edges
             })
             p.start()
@@ -385,15 +406,14 @@ class GraphsBuilder:
         meta_dict = {
             'n_samples': n_samples,
             'n_positive': n_positive,
-            'n_node_temporal_features': 4 + (2 if self.heading_enc else 1) + (2 if self.addSinCosTimeEnc else 0),
             'n_edge_features': 4 if self.aggregate_edges else 1,
             'frames_num': self.frames_num,
             'm_radius': self.m_radius,
-            'sin_cos_time_enc': self.addSinCosTimeEnc,
             'vpos_rescaled_center': self.rscToCenter,
             'aggregate_edges': self.aggregate_edges,
             'has_dims': not self.removeDims,
             'heading_encoded': self.heading_enc,
+            'flatten_time_as_graphs': self.flatten_time_as_graphs,
             'active_labels': self.active_labels
         }
         with open(self.gpath / 'metadata.json', 'w', encoding='utf-8') as metafile:

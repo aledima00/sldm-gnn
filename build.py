@@ -1,7 +1,6 @@
 import click
 from src.gbuilder import GraphsBuilder
 from pathlib import Path
-from typing import Literal as Lit
 
 DEF_FNUM = 20
 DEF_RADIUS = 30.0
@@ -13,18 +12,18 @@ DEF_RADIUS = 30.0
 @click.option('-f', '--frames-num', 'frames_num', type=int, default=DEF_FNUM, help=f'Number of frames to process (default: {DEF_FNUM}).')
 @click.option('--no-rescaling', 'no_rescaling', is_flag=True, default=False, help='Disable rescaling of input data.')
 @click.option('--remove-dims', 'remove_dims', is_flag=True, default=False, help='Remove dimensions features from the data (after eventual rescaling).')
-@click.option('--time-sc-enc', 'addSinCosTimeEnc', is_flag=True, default=False, help='Add sine-cosine time encoding to the data.')
 @click.option('--no-heading-enc', 'no_heading_enc', is_flag=True, default=False, help='Disable heading encoding in sin+cos coordinates.')
+@click.option('-F','--flatten-time-as-graphs', is_flag=True, default=False, help='Flatten time dimension as graphs (build many disconnected graphs, one per timeframe). This forces --no-aggregate-edges even if specified otherwise!')
 @click.option('--aggregate-edges/--no-aggregate-edges', 'aggregate_edges', default=True, help='Enable or disable edge feature aggregation when building graphs.')
-def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, addSinCosTimeEnc, no_heading_enc, aggregate_edges):
+def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, no_heading_enc, flatten_time_as_graphs, aggregate_edges):
     builder = GraphsBuilder(
         Path(data_path),
         frames_num=frames_num,
         m_radius=radius_threshold,
-        addSinCosTimeEnc=addSinCosTimeEnc,
         rscToCenter= not no_rescaling,
         removeDims=remove_dims,
         heading_enc = not no_heading_enc,
+        flatten_time_as_graphs=flatten_time_as_graphs,
         active_labels=[active_label],
         aggregate_edges=aggregate_edges
     )

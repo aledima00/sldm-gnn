@@ -21,7 +21,8 @@ class MapGraph(_GDataset):
         self.hasDims = metadata.has_dims
         self.active_labels = set(metadata.active_labels)
         self.heading_encoded = metadata.heading_encoded
-        self.time_encoded = metadata.sin_cos_time_enc
+        self.n_temp_feats = metadata.n_node_temporal_features
+        self.flatten_time_as_graphs = metadata.flatten_time_as_graphs
         if self.active_labels is None:
             self.active_labels = set([l.value for l in _LE])
 
@@ -72,8 +73,12 @@ class MapGraph(_GDataset):
         if self.transform:
             graph = self.transform(graph)
         if self.normalizeZScore:
-            # z-score normalization on features from 0 to -1 (excluding presence mask)
-            graph.x[:,:,:-1] = (graph.x[:,:,:-1] - self.mu["x"]) / self.sigma["x"]
+            if self.flatten_time_as_graphs:
+                # presence mask is already removed in this mode
+                graph.x = (graph.x - self.mu["x"]) / self.sigma["x"]
+            else:
+                # z-score normalization on features from 0 to -1 (excluding presence mask)
+                graph.x[:,:,:-1] = (graph.x[:,:,:-1] - self.mu["x"]) / self.sigma["x"]
             if self.hasDims:
                 graph.xdims = (graph.xdims - self.mu["xdims"]) / self.sigma["xdims"]
 
@@ -97,13 +102,14 @@ class MapGraph(_GDataset):
         return RawDataContext(self)
     
     def getMuSigma(self):
-        nfeats = 3 + (2 if self.heading_encoded else 1) + (2 if self.time_encoded else 0)
+        nfeats = (self.n_node_temporal_features - (1 if not self.flatten_time_as_graphs else 0))
         # x,y,speed, heading(encoded?), (time enc?) 
         # presence mask not included in zscore stats compute, used as mask also there
         
         # reduce over vehicles and time
-        sum_x = _tch.zeros((1,1,nfeats),device=self.device,dtype=_tch.float)
-        sum_x2 = _tch.zeros((1,1,nfeats),device=self.device,dtype=_tch.float)
+        rshp = (1,1,nfeats) if not self.flatten_time_as_graphs else (1,nfeats)
+        sum_x = _tch.zeros(rshp,device=self.device,dtype=_tch.float)
+        sum_x2 = _tch.zeros(rshp,device=self.device,dtype=_tch.float)
         
         if self.hasDims:
             sum_xdims = _tch.zeros((1,2), device=self.device)
@@ -113,26 +119,42 @@ class MapGraph(_GDataset):
         vcnt = 0
 
         with self.usingRawData:
-            for i in _tqdm(range(self.len()), desc="Computing dataset mean and std"):
-                g = self.innerGet(i) # get raw graph
+            if not self.flatten_time_as_graphs:
+                for i in _tqdm(range(self.len()), desc="Computing dataset mean and std"):
+                    g = self.innerGet(i) # get raw graph
 
-                for vi in range(g.x.size(0)):
-                    # sum faetures where presence mask is true
-                    gv = g.x[vi:vi+1,:,:]
-                    pmask = gv[0,:, -1] > 0.5  # presence mask
-                    gv = gv[:,pmask,:-1] # exclude presence mask from stats
+                    for vi in range(g.x.size(0)):
+                        # sum faetures where presence mask is true
+                        gv = g.x[vi:vi+1,:,:]
+                        pmask = gv[0,:, -1] > 0.5  # presence mask
+                        gv = gv[:,pmask,:-1] # exclude presence mask from stats
 
-                    # sum over time
-                    sum_x += gv.sum(dim=1,keepdim=True)
-                    sum_x2 += (gv ** 2).sum(dim=1,keepdim=True)
-                    tot_cnt += pmask.sum().item() # count of frames for this vehicle
-                
-                if self.hasDims:
-                    xdims = g.xdims
-                    sum_xdims += xdims.sum(dim=0,keepdim=True)
-                    sum_xdims2 += (xdims ** 2).sum(dim=0,keepdim=True)
-                    vcnt += g.xdims.size(0)
+                        # sum over time
+                        sum_x += gv.sum(dim=1,keepdim=True)
+                        sum_x2 += (gv ** 2).sum(dim=1,keepdim=True)
+                        tot_cnt += pmask.sum().item() # count of frames for this vehicle
+                    
+                    if self.hasDims:
+                        xdims = g.xdims
+                        sum_xdims += xdims.sum(dim=0,keepdim=True)
+                        sum_xdims2 += (xdims ** 2).sum(dim=0,keepdim=True)
+                        vcnt += g.xdims.size(0)
+            else:
+                for i in _tqdm(range(self.len()), desc="Computing dataset mean and std"):
+                    g = self.innerGet(i) # get raw graph
+                    
+                    # time already flattened as different graphs, so sum directly only over nodes
+                    gv = g.x
+                    sum_x += gv.sum(dim=0,keepdim=True)
+                    sum_x2 += (gv ** 2).sum(dim=0,keepdim=True)
+                    tot_cnt += gv.size(0) # count of nodes and frames together
 
+                    if self.hasDims:
+                        xdims = g.xdims
+                        sum_xdims += xdims.sum(dim=0,keepdim=True)
+                        sum_xdims2 += (xdims ** 2).sum(dim=0,keepdim=True)
+                vcnt = tot_cnt  # in this mode, consider vcnt same as tot_cnt for dims stats
+                    
 
         if self.hasDims:
             mu_xdims = sum_xdims / vcnt

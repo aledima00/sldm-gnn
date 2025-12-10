@@ -21,16 +21,19 @@ FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
 class MetaData:
     n_samples:int
     n_positive:int
-    n_node_temporal_features:int
     n_edge_features:int
     frames_num:int
     m_radius:float
-    sin_cos_time_enc:bool
     vpos_rescaled_center:bool
     has_dims:bool
     heading_encoded:bool
     aggregate_edges:bool
+    flatten_time_as_graphs: bool
     active_labels:list[int]
+
+    @property
+    def n_node_temporal_features(self)->int:
+        return (3 + (0 if self.flatten_time_as_graphs else 1) + (2 if self.heading_encoded else 1))
 
     def getNegOverPosRatio(self) ->float:
         if self.n_positive == 0:
@@ -45,9 +48,9 @@ class MetaData:
             mddict = _json.load(metafile)
         return MetaData(**mddict)
     
-    def getDataMask(self,selector:FmaskType)->_tch.Tensor:
-        nfeats = 4 + (2 if self.heading_encoded else 1) + (2 if self.sin_cos_time_enc else 0)
-        msk = _tch.full((nfeats,),False,dtype=_tch.bool)
+    def getFeaturesMask(self,selector:FmaskType)->_tch.Tensor:
+        #TODO: implement masks that scales in dimensions, in order to use [:,mask] indexing also when [:, :, mask] would be needed
+        msk = _tch.full((self.n_node_temporal_features,),False,dtype=_tch.bool)
         match selector:
             case 'x':
                 msk[0] = True
@@ -73,7 +76,7 @@ class MetaData:
                 else:
                     raise ValueError("Heading is not encoded with sin/cos, cannot get 'hcos' mask")
             case _:
-                raise ValueError(f"Unknown selector '{selector}' for getDataMask")
+                raise ValueError(f"Unknown selector '{selector}' for getFeaturesMask")
         #TODO:CHECK check this implementation
         return msk
 
@@ -190,7 +193,8 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         tot_vacc[:,epoch] = tot_val_accuracy
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc)
 
-def dataFlattener(data):
+def flattenTimeAsFeatures(data):
+    # TODO - add sincos time encoding option here
     """
     Flattens temporal dimension, bringing samples from shape [vehicles/nodes/batches, frames, features] to [vehicles/nodes/batches, frames*features]
     """ 

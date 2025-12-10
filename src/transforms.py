@@ -4,15 +4,20 @@ from torch_geometric.data import Data as _GData
 from .utils import MetaData as _MD, FmaskType as _FMType
 
 # define useful transformations for dataset
+#TODO: implement masks that scales in dimensions, in order to use [:,mask] indexing also when [:, :, mask] would be needed
 
 class AddNoise:
     def __init__(self,target:_FMType, std:float, metadata:_MD):
         self.std = std
-        self.mask = metadata.getDataMask(target)
+        self.mask = metadata.getFeaturesMask(target)
+        self.flattened_time_as_graphs = metadata.flatten_time_as_graphs
     
     def __call__(self, data:_GData)->_GData:
         # TODO:CHECK this implementation
-        data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
+        if self.flattened_time_as_graphs:
+            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * self.std
+        else:
+            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
         return data
     
 class RemoveDimsFeatures:
@@ -29,10 +34,12 @@ class RemoveDimsFeatures:
 class RandomRotate:
     def __init__(self, metadata:_MD):
         self.num_frames = metadata.frames_num
-        self.posMask = metadata.getDataMask('pos')
-        self.hMask = metadata.getDataMask('heading')
-        self.hSinMask = metadata.getDataMask('hsin')
-        self.hCosMask = metadata.getDataMask('hcos')
+        self.posMask = metadata.getFeaturesMask('pos')
+        if metadata.heading_encoded:
+            self.hSinMask = metadata.getFeaturesMask('hsin')
+            self.hCosMask = metadata.getFeaturesMask('hcos')
+        else:
+            self.hMask = metadata.getFeaturesMask('heading')
         self.headingEncoded = metadata.heading_encoded
     def __call__(self, data:_GData)->_GData:
         # random rotation angle
