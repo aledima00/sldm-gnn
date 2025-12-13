@@ -102,7 +102,7 @@ class MapGraph(_GDataset):
         return RawDataContext(self)
     
     def getMuSigma(self):
-        nfeats = (self.n_node_temporal_features - (1 if not self.flatten_time_as_graphs else 0))
+        nfeats = (self.n_temp_feats - (1 if not self.flatten_time_as_graphs else 0))
         # x,y,speed, heading(encoded?), (time enc?) 
         # presence mask not included in zscore stats compute, used as mask also there
         

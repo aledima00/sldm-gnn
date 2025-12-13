@@ -57,7 +57,7 @@ class GRUGAT(_nn.Module):
             dropout=dropout,
             negative_slope=negative_slope
         )
-        last_step_dims = gdims[-1]
+        last_step_dims = gdims[-1]*(gat_nheads if gat_concat else 1)
 
         # 6. global pooling
         match global_pooling:
@@ -126,8 +126,9 @@ class GRUGAT(_nn.Module):
 
         
     def forward(self, data):
-        x, edge_index, edge_attr, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xsttype, data.batch
-
+        x, edge_index, xsttype, batch = data.x, data.edge_index, data.xsttype, data.batch
+        edge_attr = data.edge_attr if self.gat_edge_fnum is not None else None
+        
         # 1 - embedding for station types
         st_embedded:_torch.Tensor = self.st_emb(xsttype)
 

@@ -127,7 +127,7 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                     train_loss.backward()
                     # TODO remove dbg print
                     if i==len(train_loader)-1:
-                        model.printGradInfo()
+                        # model.printGradInfo()
                         # print num of positive and negative logits in last batch
                         pos_logits = (logits >= 0).long().sum().item()
                         neg_logits = (logits < 0).long().sum().item()
