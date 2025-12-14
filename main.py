@@ -31,15 +31,17 @@ PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 DF_ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # training params
-EPOCHS = 200
+EPOCHS = 400
 BATCH_SIZE = 64
 LR = 5e-4
 WEIGHT_DECAY = 5e-5
 
 # ------------------- Data augmentation params -------------------
 TF_ROTATE = False
-TF_POS_NOISE = False
-POS_NOISE_STD = 0.2
+TF_POS_NOISE = True
+POS_NOISE_STD=0.1
+POS_NOISE_STD_MAX = 0.1
+POS_NOISE_PROPTO_SPEED = True # if True, noise std is multiplied by node speed
 
 # ------------------- GRUSAGE parameters -------------------
 GS_GRU_HIDDEN_SIZE = 48
@@ -127,7 +129,10 @@ def getParams(model:ModelOptsType) -> str:
     if TF_ROTATE:
         params += " - Random Rotate\n"
     if TF_POS_NOISE:
-        params += f" - Add Noise on Positions (X,Y) with std: {POS_NOISE_STD}\n"
+        if POS_NOISE_PROPTO_SPEED:
+            params += f" - Add Noise on Positions (X,Y) prop to speed, with max std: {POS_NOISE_STD_MAX}\n"
+        else:
+            params += f" - Add Noise on Positions (X,Y) with std: {POS_NOISE_STD}\n"
         
     return params
     
@@ -155,7 +160,7 @@ def main(inputdir,outdir,lbnum:int, model:str):
     if TF_ROTATE:
         transform.append( TFs.RandomRotate(metadata=metadata) )
     if TF_POS_NOISE:
-        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD, metadata=metadata) )
+        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD_MAX if POS_NOISE_PROPTO_SPEED else POS_NOISE_STD, prop_to_speed=POS_NOISE_PROPTO_SPEED, metadata=metadata) )
     
     transform = T.Compose(transform)
 

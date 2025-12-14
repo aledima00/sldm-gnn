@@ -7,17 +7,35 @@ from .utils import MetaData as _MD, FmaskType as _FMType
 #TODO: implement masks that scales in dimensions, in order to use [:,mask] indexing also when [:, :, mask] would be needed
 
 class AddNoise:
-    def __init__(self,target:_FMType, std:float, metadata:_MD):
-        self.std = std
+    def __init__(self,target:_FMType, std:float, metadata:_MD, prop_to_speed:bool=False):
+        self._std = std
+        # std assumed nominal std if prop_to_speed is False or max std if prop_to_speed is True
         self.mask = metadata.getFeaturesMask(target)
+        self.speedMask = metadata.getFeaturesMask('speed')
         self.flattened_time_as_graphs = metadata.flatten_time_as_graphs
+        self.prop_to_speed = prop_to_speed        
+
+    def getStd(self,*,speed=None):
+        if self.prop_to_speed:
+            frameMaxStd = self._std
+            return (1-_tch.exp(-speed/10)) * frameMaxStd
+        else:
+            return self._std
+
     
     def __call__(self, data:_GData)->_GData:
         # TODO:CHECK this implementation
-        if self.flattened_time_as_graphs:
-            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * self.std
+        if self.prop_to_speed:
+            speed = data.x[:,self.speedMask] if self.flattened_time_as_graphs else data.x[:,:,self.speedMask]
+            std = self.getStd(speed=speed)
         else:
-            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * self.std
+            std = self.getStd()
+
+        
+        if self.flattened_time_as_graphs:
+            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * std
+        else:
+            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * std
         return data
     
 class RemoveDimsFeatures:
