@@ -84,13 +84,6 @@ GF_GPOOLING = 'double'
 
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-
-def psplit(ds:MapGraph):
-    d_train,d_eval = split_tr_ev_3to1(ds)
-    print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
-    print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
-    return d_train, d_eval
 
 def stripnum(match:re.Match)->str:
     sign = match.group(1).replace('+','')
@@ -108,7 +101,7 @@ def getPlotFname(model:ModelOptsType, outdir:Path)->str:
         if not (outdir / fname).exists():
             return fname
         
-def getParams(model:ModelOptsType) -> str:
+def getParams(model:ModelOptsType, cut:int|None=None) -> str:
     #TODO: improve formatting
     """ Parameters as string for plot text box """
     match model:
@@ -133,6 +126,8 @@ def getParams(model:ModelOptsType) -> str:
             params += f" - Add Noise on Positions (X,Y) prop to speed, with max std: {POS_NOISE_STD_MAX}\n"
         else:
             params += f" - Add Noise on Positions (X,Y) with std: {POS_NOISE_STD}\n"
+    if cut is not None:
+        params += f" - Cutting after: {cut} frames\n"
         
     return params
     
@@ -140,54 +135,67 @@ def getParams(model:ModelOptsType) -> str:
 @click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.argument('outdir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
-@click.option('-m', '--model', 'model', type=click.Choice(ModelOptsType.__args__, case_sensitive=False), required=True, prompt='Choose model', help='Model to use')
-def main(inputdir,outdir,lbnum:int, model:str):
+@click.option('-m', '--model', 'modelname', type=click.Choice(ModelOptsType.__args__, case_sensitive=False), required=True, prompt='Choose model', help='Model to use')
+@click.option('--train-eval-folder', is_flag=True, default=False, help='If set, looks for train/eval subfolders in inputdir')
+@click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
+def main(inputdir,outdir,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None):
 
-    path = inputdir.resolve()
-    gpath = path / '.graphs'
-    metapath = gpath / 'metadata.json'
-    metadata = MetaData.loadJson(metapath)
+    inpath = inputdir.resolve()
     outpath = outdir.resolve()
     outpath.mkdir(parents=True, exist_ok=True)
 
-    plt_yticks = np.arange(-0.1, 1.2, 0.1)
-
-
     # string with all params in exp format
-    pfname = getPlotFname(model, outpath)
+    pfname = getPlotFname(modelname, outpath)
+
+    if train_eval_folder:
+        tr_gpath = inpath / 'train' / '.graphs'
+        ev_gpath = inpath / 'eval' / '.graphs'
+        tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
+        ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
+    else:
+        gpath = inpath / '.graphs'
+        metadata = MetaData.loadJson(gpath / 'metadata.json')
+        tr_metadata = metadata
+        ev_metadata = metadata
 
     transform = []
     if TF_ROTATE:
-        transform.append( TFs.RandomRotate(metadata=metadata) )
+        transform.append( TFs.RandomRotate(metadata=tr_metadata) )
     if TF_POS_NOISE:
-        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD_MAX if POS_NOISE_PROPTO_SPEED else POS_NOISE_STD, prop_to_speed=POS_NOISE_PROPTO_SPEED, metadata=metadata) )
+        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD_MAX if POS_NOISE_PROPTO_SPEED else POS_NOISE_STD, prop_to_speed=POS_NOISE_PROPTO_SPEED, metadata=tr_metadata) )
+    if cut is not None:
+        transform.append( TFs.CutFrames(cut) )
     
     transform = T.Compose(transform)
-
-    # dataset and transforms
-    ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
+    
     
     print(f" - Using device: {DEVICE}")
-    print(f" - Dataset length: {len(ds)}")
 
-    match model:
-        case 'grusage':
-            runner = runGruSage
-        case 'sagegru':
-            runner = runSageGru
-        case 'grugat':
-            runner = runGruGat
-        case 'grufc':
-            runner = runGruFc
-        case _:
-            raise ValueError(f"Unknown model type: {model}")
+    if train_eval_folder:
+        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
+        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata)
+    else:
+        ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
+        d_train,d_eval = split_tr_ev_3to1(ds)
+
+    print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
+    print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
+    # create data loaders
+    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
+    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
+
+    model = getModel(modelname,tr_metadata)
     
-    (tot_tracc, tot_vacc) = runner(ds, metadata=metadata)
+    (tot_tracc, tot_vacc) = runModel(model, tr_metadata, dl_train, dl_eval)
+    plotAccuracies(tot_tracc,tot_vacc, modelname, outpath / pfname, lbnum, cut=cut)
+
+def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut):
     fig, (ax_plot, ax_text) = plt.subplots(
         1, 2,
         figsize=(10,4),
         gridspec_kw={'width_ratios': [3, 2]}
     )
+    plt_yticks = np.arange(-0.1, 1.2, 0.1)
     ax_plot.plot(tot_vacc[0,:], label='Val. Acc.')
     ax_plot.plot(tot_tracc[0,:], linestyle='--', label='Tr. Acc.')
     ax_plot.set_ylim(bottom=0,top=1)
@@ -197,40 +205,15 @@ def main(inputdir,outdir,lbnum:int, model:str):
     ax_plot.set_title(f'Validation Accuracy for label #{lbnum}')
     
     # text box with final results
-    params_text = getParams(model)
+    params_text = getParams(modelname, cut=cut)
     ax_text.axis('off')
     ax_text.text(0,0.95, params_text, va='top')
 
     fig.tight_layout()
-    plt.savefig(outpath / pfname )
+    plt.savefig(outfile)
     plt.close(fig)
 
-def runGruGat(ds:MapGraph,metadata:MetaData):
-    model = GRUGAT(
-        dynamic_features_num=metadata.n_node_temporal_features,
-        has_dims=metadata.has_dims,
-        has_aggregated_edges=metadata.aggregate_edges,
-        frames_num=metadata.frames_num,
-        emb_dim=EMB_DIM,
-        gru_hidden_size=GG_GRU_HIDDEN_SIZE,
-        gru_num_layers=GG_GRU_NUM_LAYERS,
-        fc1dims=GG_FCDIMS1,
-        gat_edge_fnum=None,
-        gat_inner_dims=GG_GAT_HIDDEN_DIMS,
-        gat_nheads = GG_GAT_NHEADS,
-        fc2dims=GG_FCDIMS2,
-        out_dim=len(metadata.active_labels),
-        num_st_types=NUM_POSSIBLE_STATION_TYPES,
-        dropout=GG_DROPOUT,
-        negative_slope=GG_NEGSLOPE,
-        gat_concat=GG_GAT_HEADS_CONCAT,
-        global_pooling=GG_GPOOLING
-    )
-    d_train,d_eval = psplit(ds)
-    # create data loaders
-    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
-    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
-
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
     (_, tot_tracc),(_, tot_vacc) = train_model(
         model,
         dl_train,
@@ -241,121 +224,87 @@ def runGruGat(ds:MapGraph,metadata:MetaData):
         device=DEVICE,
         verbose=VERBOSE,
         progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels,
-        neg_over_pos_ratio=metadata.getNegOverPosRatio()
+        active_labels=train_metadata.active_labels,
+        neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
     )
     return (tot_tracc, tot_vacc)
 
-def runGruSage(ds:MapGraph,metadata:MetaData):
-    model = GruSage(
-        dynamic_features_num=metadata.n_node_temporal_features,
-        has_dims=metadata.has_dims,
-        has_aggregated_edges=metadata.aggregate_edges,
-        frames_num=metadata.frames_num,
-        gru_hidden_size=GS_GRU_HIDDEN_SIZE,
-        gru_num_layers=GS_GRU_NUM_LAYERS,
-        fc1dims=GS_FC1_DIMS,
-        sage_hidden_dims=GS_SAGE_HIDDEN_DIMS,
-        fc2dims=GS_FC2_DIMS,
-        out_dim=len(metadata.active_labels),
-        num_st_types=NUM_POSSIBLE_STATION_TYPES,
-        emb_dim=EMB_DIM,
-        dropout=GS_DROPOUT,
-        negative_slope=GS_NEGSLOPE,
-        global_pooling=GS_GPOOLING
-    )
-    d_train,d_eval = psplit(ds)
-    # create data loaders
-    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
-    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
-
-    (_, tot_tracc),(_, tot_vacc) = train_model(
-        model,
-        dl_train,
-        dl_eval,
-        epochs=EPOCHS,
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
-        device=DEVICE,
-        verbose=VERBOSE,
-        progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels,
-        neg_over_pos_ratio=metadata.getNegOverPosRatio()
-    )
-    return (tot_tracc, tot_vacc)
-
-def runSageGru(ds:MapGraph,metadata:MetaData):
-    model = SageGru(
-        batch_size=BATCH_SIZE,
-        dynamic_features_num=metadata.n_node_temporal_features,
-        has_dims=metadata.has_dims,
-        frames_num=metadata.frames_num,
-        sage_hidden_dims=SG_SAGE_HIDDEN_DIMS,
-        fc1dims=SG_FC1_DIMS,
-        gru_hidden_size=SG_GRU_HIDDEN_SIZE,
-        gru_num_layers=SG_GRU_NUM_LAYERS,
-        fc2dims=SG_FC2_DIMS,
-        out_dim=len(metadata.active_labels),
-        num_st_types=NUM_POSSIBLE_STATION_TYPES,
-        emb_dim=EMB_DIM,
-        dropout=SG_DROPOUT,
-        negative_slope=SG_NEGSLOPE,
-        global_pooling='double'
-    )
-    d_train,d_eval = psplit(ds)
-    # create data loaders
-    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
-    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
-
-    (_, tot_tracc),(_, tot_vacc) = train_model(
-        model,
-        dl_train,
-        dl_eval,
-        epochs=EPOCHS,
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
-        device=DEVICE,
-        verbose=VERBOSE,
-        progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels,
-        neg_over_pos_ratio=metadata.getNegOverPosRatio()
-    )
-    return (tot_tracc, tot_vacc)
-
-def runGruFc(ds:MapGraph,metadata:MetaData):
-    model = GruFC(
-        dynamic_features_num=metadata.n_node_temporal_features,
-        has_dims=metadata.has_dims,
-        frames_num=metadata.frames_num,
-        gru_hidden_size=GF_GRU_HIDDEN_SIZE,
-        gru_num_layers=GF_GRU_NUM_LAYERS,
-        fc_dims=GF_FCDIMS,
-        out_dim=len(metadata.active_labels),
-        num_st_types=NUM_POSSIBLE_STATION_TYPES,
-        emb_dim=EMB_DIM,
-        dropout=GF_DROPOUT,
-        negative_slope=GF_NEGSLOPE,
-        global_pooling=GF_GPOOLING
-    )
-    d_train,d_eval = psplit(ds)
-    # create data loaders
-    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
-    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
-
-    (_, tot_tracc),(_, tot_vacc) = train_model(
-        model,
-        dl_train,
-        dl_eval,
-        epochs=EPOCHS,
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
-        device=DEVICE,
-        verbose=VERBOSE,
-        progress_logging=PROGRESS_LOGGING,
-        active_labels=metadata.active_labels,
-        neg_over_pos_ratio=metadata.getNegOverPosRatio()
-    )
-    return (tot_tracc, tot_vacc)
+def getModel(modelname:ModelOptsType,train_metadata:MetaData):
+    match modelname:
+        case 'grugat':
+            return GRUGAT(
+                dynamic_features_num=train_metadata.n_node_temporal_features,
+                has_dims=train_metadata.has_dims,
+                has_aggregated_edges=train_metadata.aggregate_edges,
+                frames_num=train_metadata.frames_num,
+                emb_dim=EMB_DIM,
+                gru_hidden_size=GG_GRU_HIDDEN_SIZE,
+                gru_num_layers=GG_GRU_NUM_LAYERS,
+                fc1dims=GG_FCDIMS1,
+                gat_edge_fnum=None,
+                gat_inner_dims=GG_GAT_HIDDEN_DIMS,
+                gat_nheads = GG_GAT_NHEADS,
+                fc2dims=GG_FCDIMS2,
+                out_dim=len(train_metadata.active_labels),
+                num_st_types=NUM_POSSIBLE_STATION_TYPES,
+                dropout=GG_DROPOUT,
+                negative_slope=GG_NEGSLOPE,
+                gat_concat=GG_GAT_HEADS_CONCAT,
+                global_pooling=GG_GPOOLING
+            )
+        case 'grusage':
+            return GruSage(
+                dynamic_features_num=train_metadata.n_node_temporal_features,
+                has_dims=train_metadata.has_dims,
+                has_aggregated_edges=train_metadata.aggregate_edges,
+                frames_num=train_metadata.frames_num,
+                gru_hidden_size=GS_GRU_HIDDEN_SIZE,
+                gru_num_layers=GS_GRU_NUM_LAYERS,
+                fc1dims=GS_FC1_DIMS,
+                sage_hidden_dims=GS_SAGE_HIDDEN_DIMS,
+                fc2dims=GS_FC2_DIMS,
+                out_dim=len(train_metadata.active_labels),
+                num_st_types=NUM_POSSIBLE_STATION_TYPES,
+                emb_dim=EMB_DIM,
+                dropout=GS_DROPOUT,
+                negative_slope=GS_NEGSLOPE,
+                global_pooling=GS_GPOOLING
+            )
+        case 'sagegru':
+            return SageGru(
+                batch_size=BATCH_SIZE,
+                dynamic_features_num=train_metadata.n_node_temporal_features,
+                has_dims=train_metadata.has_dims,
+                frames_num=train_metadata.frames_num,
+                sage_hidden_dims=SG_SAGE_HIDDEN_DIMS,
+                fc1dims=SG_FC1_DIMS,
+                gru_hidden_size=SG_GRU_HIDDEN_SIZE,
+                gru_num_layers=SG_GRU_NUM_LAYERS,
+                fc2dims=SG_FC2_DIMS,
+                out_dim=len(train_metadata.active_labels),
+                num_st_types=NUM_POSSIBLE_STATION_TYPES,
+                emb_dim=EMB_DIM,
+                dropout=SG_DROPOUT,
+                negative_slope=SG_NEGSLOPE,
+                global_pooling='double'
+            )
+        case 'grufc':
+            return GruFC(
+                dynamic_features_num=train_metadata.n_node_temporal_features,
+                has_dims=train_metadata.has_dims,
+                frames_num=train_metadata.frames_num,
+                gru_hidden_size=GF_GRU_HIDDEN_SIZE,
+                gru_num_layers=GF_GRU_NUM_LAYERS,
+                fc_dims=GF_FCDIMS,
+                out_dim=len(train_metadata.active_labels),
+                num_st_types=NUM_POSSIBLE_STATION_TYPES,
+                emb_dim=EMB_DIM,
+                dropout=GF_DROPOUT,
+                negative_slope=GF_NEGSLOPE,
+                global_pooling=GF_GPOOLING
+            )
+        case _:
+            raise ValueError(f"Unknown model name: {modelname}")
 
 if __name__ == '__main__':
     main()

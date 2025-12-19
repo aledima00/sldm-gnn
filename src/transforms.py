@@ -90,7 +90,17 @@ class RandomRotate:
         
 
         return data
+
+class CutFrames:
+    def __init__(self, cut:int):
+        self.cut = cut
+
+    def __call__(self, data:_GData)->_GData:
+        # assume data.x shape is [num_nodes, num_frames, num_features]
+        # TODO - ADD IMPLEMENTATION FOR FLATTENED TIME
+        data.x = data.x[:, :self.cut, :]
+        return data
         
         
 
-__all__ = ['AddNoise','RemoveDimsFeatures','RandomRotate']
+__all__ = ['AddNoise','RemoveDimsFeatures','RandomRotate','CutFrames']
