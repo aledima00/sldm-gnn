@@ -205,6 +205,68 @@ def logworker(*,progress_queue:_Queue,total:int):
         progress.update(val)
     progress.close()
 
+class MapBuilder:
+    filepath: _Path
+    def __init__(self, filepath:_Path, num_used_traffic_categories:int=7):
+        self.filepath = filepath.resolve()
+        savedir = self.filepath.parent / '.map'
+        if not savedir.exists():
+            savedir.mkdir(parents=True, exist_ok=True)
+        self.savepath = savedir / (self.filepath.stem + '.pth')
+        self.num_used_traffic_categories = num_used_traffic_categories
+    def save(self):
+        df = _pd.read_parquet(self.filepath).astype({
+            'start_x':'float32',
+            'start_y':'float32',
+            'end_x':'float32',
+            'end_y':'float32',
+            'allowed_traffic_enc':'uint8',
+            'speed_limit':'float32',
+            'width':'float32',
+            'edge_id':'string',
+        })
+
+        #enumerate edgeIDs in order to convert to integers allowing future embedding usage
+        unique_edge_ids = df['edge_id'].unique()
+        edge_id_to_int = {edge_id: idx for idx, edge_id in enumerate(unique_edge_ids)}
+        df['edge_id_enc'] = df['edge_id'].map(edge_id_to_int).astype('long')
+        df.drop(columns=['edge_id'], inplace=True)
+
+        #expand allowed_traffic_enc from uint8 to 8 boolean columns
+        for bit_pos in range(self.num_used_traffic_categories):
+            col_name = f'allowed_traffic_{bit_pos}'
+            df[col_name] = df['allowed_traffic_enc'].map(lambda x: (x >> bit_pos) & 1).astype('uint8')
+        df.drop(columns=['allowed_traffic_enc'], inplace=True)
+
+        #print(f"df:{df.head(20)}")
+
+        # convert to torch tensor
+        float_features = _tch.tensor(df.drop(columns=['edge_id_enc']).to_numpy(dtype=_np.float32), dtype=_tch.float)
+        eid_cat = _tch.tensor(df['edge_id_enc'].to_numpy(dtype=_np.long), dtype=_tch.long)
+
+        # compute centroids
+        start_coords = float_features[:, 0:2]  # start_x, start_y
+        end_coords = float_features[:, 2:4]    # end_x, end_y
+        centroids = (start_coords + end_coords) / 2.0  # [NUM_SEGMENTS, 2]
+
+        # build map graph (edge indexes)
+        edge_indexes = []
+        num_segments = float_features.shape[0]
+        for i in range(num_segments):
+            end_i = end_coords[i]
+            for j in range(num_segments):
+                if i != j:
+                    start_j = start_coords[j]
+                    # check if segment i's end is close to segment j's start
+                    dist = _np.linalg.norm(end_i.numpy() - start_j.numpy())
+                    if dist < 2.0:  # threshold distance to consider a connection
+                        edge_indexes.append([i, j])
+        edge_indexes = _tch.tensor(edge_indexes, dtype=_tch.long).t().contiguous()  # [2, NUM_EDGES]
+
+
+        if self.savepath.exists():
+            self.savepath.unlink()
+        _tch.save({'float_features': float_features, 'eid_cat': eid_cat, 'centroids': centroids, 'edge_indexes': edge_indexes}, self.savepath)
 
 class GraphsBuilder:
     dirpath: _Path # path to the dataset directory
