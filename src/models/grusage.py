@@ -4,9 +4,12 @@ from torch_geometric.nn import global_mean_pool as _gmean_pool, global_max_pool 
 from typing import Literal as _Lit
 
 from .blocks.sageblock import SageBlock as _SageBlock
+from .map.mapencoder import MapEncoder as _MapEncoder
+from .map.mapattention import MapSpatialAttention as _MapSpatialAttention
+from .map.mapInputNorm import MapZscoreNorm as _MapZscoreNorm
 
 class GruSage(_nn.Module):
-    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double'):
+    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None):
         super().__init__()
 
         #TODO validate inputs
@@ -42,6 +45,26 @@ class GruSage(_nn.Module):
             ) for i in range(len(ldims1)-1)
         ])
         last_step_dims = ldims1[-1]
+
+        # 4b add map tensors if provided
+        if map_tensors is not None:
+            #TODO add embedding and hidden layers specs for map encoder
+            self.map_provided = True
+            self.map_encoder = _MapEncoder(
+                map_float_features=_MapZscoreNorm.onfly(map_tensors['float_features']),
+                map_edge_ids=map_tensors['eid_cat'],
+                map_edge_indexes=map_tensors['edge_indexes'],
+                dropout=dropout,
+                negative_slope=negative_slope
+            )
+            #TODO add attention specs
+            self.map_attention = _MapSpatialAttention(
+                map_centroids=map_tensors['centroids']
+            )
+
+            last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
+        else:
+            self.map_provided = False
 
         # 5 - GraphSAGE layers
         sagedims = [last_step_dims] + sage_hidden_dims
@@ -98,6 +121,16 @@ class GruSage(_nn.Module):
         # 4 - fc layers before GraphSAGE
         for fc in self.fc1s:
             x = fc(x)
+
+        # 4b - map encoding and attention if map tensors provided
+        if self.map_provided:
+            last_pos_raw = data.pos_raw[:,-1,:]
+            map_embeddings = self.map_encoder()
+            map_context = self.map_attention(
+                vehicle_last_positions = last_pos_raw, # coords before zscore norm - [BATCH_SIZE, 2]
+                map_embeddings = map_embeddings # [NUM_TOTAL_SEGMENTS, EMBED_DIM]
+            )
+            x = _torch.cat([x, map_context], dim=1)
 
         # 5 - GraphSAGE layers
         x = self.sage(x, edge_index)

@@ -12,7 +12,7 @@ from .utils import MetaData as _MD
 
 class MapGraph(_GDataset):
     pos_rescaling_opt_type = _Lit['none', 'center']
-    def __init__(self, graphs_dirpath:_Path,*, device:str='cpu',transform=None,normalizeZScore:bool=True,metadata:_MD=None):
+    def __init__(self, graphs_dirpath:_Path,*, device:str='cpu',transform=None,normalizeZScore:bool=True,metadata:_MD=None,zscore_mu_sigma:tuple[dict,dict]|None=None):
         super().__init__(transform=transform)
         if metadata is None:
             metadata = _MD.loadJson(graphs_dirpath / 'metadata.json')
@@ -34,8 +34,17 @@ class MapGraph(_GDataset):
 
         self.normalizeZScore = normalizeZScore
         if normalizeZScore:
-            self.mu, self.sigma = self.getMuSigma()
+            if zscore_mu_sigma is not None:
+                self.mu, self.sigma = zscore_mu_sigma
+            else:
+                self.mu, self.sigma = self.computeMuSigma()
     
+    def getMuSigma(self):
+        if not hasattr(self, 'mu') or not hasattr(self, 'sigma') or self.mu is None or self.sigma is None:
+            mu_sigma= self.computeMuSigma()
+            self.mu, self.sigma = mu_sigma
+        return self.mu, self.sigma
+
     def len(self):
         return len(self.paths)
     
@@ -75,9 +84,11 @@ class MapGraph(_GDataset):
         if self.normalizeZScore:
             if self.flatten_time_as_graphs:
                 # presence mask is already removed in this mode
+                graph.pos_raw = graph.x[:, :2].clone()  # store raw positions before normalization
                 graph.x = (graph.x - self.mu["x"]) / self.sigma["x"]
             else:
                 # z-score normalization on features from 0 to -1 (excluding presence mask)
+                graph.pos_raw = graph.x[:,:, :2].clone()  # store raw positions before normalization
                 graph.x[:,:,:-1] = (graph.x[:,:,:-1] - self.mu["x"]) / self.sigma["x"]
             if self.hasDims:
                 graph.xdims = (graph.xdims - self.mu["xdims"]) / self.sigma["xdims"]
@@ -101,7 +112,7 @@ class MapGraph(_GDataset):
                 self.dataset.transform = self.prevTransform
         return RawDataContext(self)
     
-    def getMuSigma(self):
+    def computeMuSigma(self):
         nfeats = (self.n_temp_feats - (1 if not self.flatten_time_as_graphs else 0))
         # x,y,speed, heading(encoded?), (time enc?) 
         # presence mask not included in zscore stats compute, used as mask also there
@@ -161,5 +172,5 @@ class MapGraph(_GDataset):
             sigma_xdims = ((sum_xdims2 / vcnt) - (mu_xdims ** 2)).sqrt()
 
         mu_x = sum_x / tot_cnt
-        sigma_x = ((sum_x2 / tot_cnt) - (mu_x ** 2)).sqrt()    
+        sigma_x = ((sum_x2 / tot_cnt) - (mu_x ** 2)).sqrt().clamp(min=1e-8) # TODO set specific clamping value, now empirical
         return ({"x": mu_x, "xdims": mu_xdims if self.hasDims else None}, {"x": sigma_x, "xdims": sigma_xdims if self.hasDims else None})

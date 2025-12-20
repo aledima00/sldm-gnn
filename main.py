@@ -138,7 +138,8 @@ def getParams(model:ModelOptsType, cut:int|None=None) -> str:
 @click.option('-m', '--model', 'modelname', type=click.Choice(ModelOptsType.__args__, case_sensitive=False), required=True, prompt='Choose model', help='Model to use')
 @click.option('--train-eval-folder', is_flag=True, default=False, help='If set, looks for train/eval subfolders in inputdir')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
-def main(inputdir,outdir,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None):
+@click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
+def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None, include_map:bool):
 
     inpath = inputdir.resolve()
     outpath = outdir.resolve()
@@ -173,7 +174,8 @@ def main(inputdir,outdir,lbnum:int, modelname:str, train_eval_folder:bool, cut:i
 
     if train_eval_folder:
         d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
-        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata)
+        mu_sigma = d_train.getMuSigma()
+        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
     else:
         ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
         d_train,d_eval = split_tr_ev_3to1(ds)
@@ -184,7 +186,15 @@ def main(inputdir,outdir,lbnum:int, modelname:str, train_eval_folder:bool, cut:i
     dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
     dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
 
-    model = getModel(modelname,tr_metadata)
+    # load map data if required
+    if include_map:
+        map_path = inpath / '.map' / 'vmap.pth'
+        map_tensors = torch.load(map_path, map_location=DEVICE)
+        print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
+    else:
+        map_tensors = None
+
+    model = getModel(modelname,tr_metadata,map_tensors=map_tensors)
     
     (tot_tracc, tot_vacc) = runModel(model, tr_metadata, dl_train, dl_eval)
     plotAccuracies(tot_tracc,tot_vacc, modelname, outpath / pfname, lbnum, cut=cut)
@@ -229,7 +239,7 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
     )
     return (tot_tracc, tot_vacc)
 
-def getModel(modelname:ModelOptsType,train_metadata:MetaData):
+def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None):
     match modelname:
         case 'grugat':
             return GRUGAT(
@@ -268,7 +278,8 @@ def getModel(modelname:ModelOptsType,train_metadata:MetaData):
                 emb_dim=EMB_DIM,
                 dropout=GS_DROPOUT,
                 negative_slope=GS_NEGSLOPE,
-                global_pooling=GS_GPOOLING
+                global_pooling=GS_GPOOLING,
+                map_tensors=map_tensors
             )
         case 'sagegru':
             return SageGru(
