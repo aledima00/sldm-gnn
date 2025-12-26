@@ -52,6 +52,7 @@ class GruSage(_nn.Module):
             self.map_provided = True
             self.map_encoder = _MapEncoder(
                 map_float_features=_MapZscoreNorm.onfly(map_tensors['float_features']),
+                map_bool_features = map_tensors['bool_features'],
                 lane_type_cats=map_tensors['lane_type_cats'],
                 graph_edge_indexes=map_tensors['mgraph_edge_indexes'],
                 dropout=dropout,

@@ -213,6 +213,52 @@ class MapBuilder:
         if not savedir.exists():
             savedir.mkdir(parents=True, exist_ok=True)
         self.savepath = savedir / (self.filepath.stem + '.pth')
+
+    @staticmethod
+    def segmentsAngles(start_tensor:_tch.Tensor,end_tensor:_tch.Tensor)->_tch.Tensor:
+        """ Computes the angle of each segment based on start and end coordinates. Shapes are [NUM_SEGMENTS, 2] for both inputs """
+        delta_x = end_tensor[:,0] - start_tensor[:,0]
+        delta_y = end_tensor[:,1] - start_tensor[:,1]
+        angles = _np.arctan2(delta_y, delta_x)  # returns angle in radians
+        return angles
+    
+    @staticmethod
+    def segmentsDistance(seg1_start:_tch.Tensor,seg1_end:_tch.Tensor, width1:_tch.Tensor, seg2_start:_tch.Tensor,seg2_end:_tch.Tensor, width2:_tch.Tensor)->_tch.Tensor:
+        l1 = _np.linalg.norm(seg1_end - seg1_start)
+        l2 = _np.linalg.norm(seg2_end - seg2_start)
+
+        # compute with l1 as longest one, so if l2>l1 swap
+        if l2 > l1:
+            return MapBuilder.segmentsDistance(seg2_start,seg2_end,width2, seg1_start,seg1_end,width1)
+        else:
+            #TODO: CHECK IF THIS IS THE BEST WAY TO COMPUTE DISTANCE BETWEEN SEGMENTS
+            # raw distance is computed as orth distance from centroid2 to segment1
+            # segment1: A-B
+            # centroid2: C
+            C = (seg2_start + seg2_end) / 2.0
+            A = seg1_start
+            B = seg1_end
+            AC = C-A
+            AB = B-A
+            #BC = C-B
+
+            # compute projection of C in AB: P=A + t*AB,t=AC@AB/AB@AB (but clamped to segment extents)
+            t = _np.dot(AC, AB) / _np.dot(AB, AB)
+            if t < 0.0:
+                P = A
+            elif t > 1.0:
+                P = B
+            else:
+                P = A + t * AB
+
+            # compute raw distance as distance Centroid-Projection
+            raw_dist = _np.linalg.norm(C - P)
+
+            # adjusted distance considering widths
+            return raw_dist - (width1 + width2) / 2.0
+
+
+    
     def save(self):
         df = _pd.read_parquet(self.filepath).astype({
             'start_x':'float32',
@@ -222,37 +268,71 @@ class MapBuilder:
             'lane_type':'uint8',
             'speed_limit':'float32',
             'width':'float32',
+            'can_go_left':'bool',
+            'can_go_right':'bool'
         })
 
         #print(f"df:{df.head(20)}")
 
         # convert to torch tensor
-        float_features = _tch.tensor(df.drop(columns=['lane_type']).to_numpy(dtype=_np.float32), dtype=_tch.float)
+        #TODO ADD EXPLICIT ORDER OF COLUMNS
+        float_features = _tch.tensor(df.drop(columns=['lane_type', 'can_go_left', 'can_go_right']).to_numpy(dtype=_np.float32), dtype=_tch.float)
+        bool_features = _tch.tensor(df[['can_go_left','can_go_right']].to_numpy(dtype=_np.bool_), dtype=_tch.bool)
         lane_type_cats = _tch.tensor(df['lane_type'].to_numpy(dtype=_np.long), dtype=_tch.long)
 
         # compute centroids
         start_coords = float_features[:, 0:2]  # start_x, start_y
         end_coords = float_features[:, 2:4]    # end_x, end_y
+        cgl = bool_features[:, 0:1]  # can_go_left
+        cgr = bool_features[:, 1:2]  # can_go_right
+        widths = float_features[:, 5:6]  # width
+        angles = self.segmentsAngles(start_coords,end_coords).unsqueeze(1)  # [NUM_SEGMENTS, 1]
         centroids = (start_coords + end_coords) / 2.0  # [NUM_SEGMENTS, 2]
 
         # build map graph (edge indexes)
         edge_indexes = []
         num_segments = float_features.shape[0]
-        for i in range(num_segments):
+        for i in _tqdm(range(num_segments), desc="Building Map Graph Edges...", unit="segments"):
+            start_i = start_coords[i]
             end_i = end_coords[i]
+            ang_i = angles[i]
+            cgl_i = cgl[i]
+            cgr_i = cgr[i]
+            w_i = widths[i]
             for j in range(num_segments):
                 if i != j:
                     start_j = start_coords[j]
+                    end_j = end_coords[j]
+                    ang_j = angles[j]
+                    cgl_j = cgl[j]
+                    cgr_j = cgr[j]
+                    w_j = widths[j]
+                    fwd_dist = _np.linalg.norm(end_i.numpy() - start_j.numpy())
+
+                    # LANE-LATERAL NEIGH connections: check angle similarity and proximity
+                    delta_angle = _np.abs(ang_i - ang_j).item()
+                    #TODO: add delta angle as param
+                    if delta_angle < _np.deg2rad(30):  # approximately same direction
+                        #TODO: add proximity threshold as param
+                        if self.segmentsDistance(start_i,end_i,w_i,start_j,end_j,w_j).item() < 1.0:
+                            #FIXME: use connections only if lanes are directionally compatible
+                            # L-R connections
+                            if cgr_i.item() and cgl_j.item():
+                                edge_indexes.append([i, j])
+                            # R-L connections
+                            elif cgl_i.item() and cgr_j.item():
+                                edge_indexes.append([i, j])
+
+                    # END-START FWD connections
                     # check if segment i's end is close to segment j's start
-                    dist = _np.linalg.norm(end_i.numpy() - start_j.numpy())
-                    if dist < 2.0:  # threshold distance to consider a connection
+                    elif fwd_dist < 2.0:  # threshold distance to consider a connection
                         edge_indexes.append([i, j])
         edge_indexes = _tch.tensor(edge_indexes, dtype=_tch.long).t().contiguous()  # [2, NUM_EDGES]
 
 
         if self.savepath.exists():
             self.savepath.unlink()
-        _tch.save({'float_features': float_features, 'lane_type_cats': lane_type_cats, 'mseg_centroids': centroids, 'mgraph_edge_indexes': edge_indexes}, self.savepath)
+        _tch.save({'float_features': float_features, 'bool_features': bool_features, 'lane_type_cats': lane_type_cats, 'mseg_centroids': centroids, 'mgraph_edge_indexes': edge_indexes}, self.savepath)
 
 class GraphsBuilder:
     dirpath: _Path # path to the dataset directory
