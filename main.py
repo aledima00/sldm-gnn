@@ -93,9 +93,9 @@ def stripnum(match:re.Match)->str:
     else:
         return f"E{sign}{num}"
 
-def getPlotFname(model:ModelOptsType, outdir:Path)->str:
+def getPlotFname(model:ModelOptsType, outdir:Path,mapIncluded:bool)->str:
     #TODO: launch checks at the beginning of the main script
-    fnamebase = f"{model.upper()}_RUN_"
+    fnamebase = f"{model.upper()}_{'MAP_' if mapIncluded else ''}RUN_"
     for i in range(1,1001):
         fname = f"{fnamebase}{i:03d}.png"
         if not (outdir / fname).exists():
@@ -146,7 +146,8 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
     outpath.mkdir(parents=True, exist_ok=True)
 
     # string with all params in exp format
-    pfname = getPlotFname(modelname, outpath)
+    #TODO ADD CUTS
+    pfname = getPlotFname(modelname, outpath,mapIncluded=include_map)
 
     if train_eval_folder:
         tr_gpath = inpath / 'train' / '.graphs'
