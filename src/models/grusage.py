@@ -52,14 +52,14 @@ class GruSage(_nn.Module):
             self.map_provided = True
             self.map_encoder = _MapEncoder(
                 map_float_features=_MapZscoreNorm.onfly(map_tensors['float_features']),
-                map_edge_ids=map_tensors['eid_cat'],
-                map_edge_indexes=map_tensors['edge_indexes'],
+                lane_type_cats=map_tensors['lane_type_cats'],
+                graph_edge_indexes=map_tensors['mgraph_edge_indexes'],
                 dropout=dropout,
                 negative_slope=negative_slope
             )
             #TODO add attention specs
             self.map_attention = _MapSpatialAttention(
-                map_centroids=map_tensors['centroids']
+                map_centroids=map_tensors['mseg_centroids']
             )
 
             last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
