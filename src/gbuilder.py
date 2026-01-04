@@ -110,8 +110,8 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
                             # use all attributes for distance statistics
                             edge_attr_list.append([min_dist, max_dist, mean_dist, msq_dist])
 
-            gdata_dict['edge_index'] = _tch.tensor(edge_index_list, dtype=_tch.long).t().contiguous()
-            gdata_dict['edge_attr'] = _tch.tensor(edge_attr_list, dtype=_tch.float)
+            gdata_dict['edge_index'] = _tch.tensor(edge_index_list, dtype=_tch.long).t().contiguous() if len(edge_index_list) > 0 else _tch.empty((2,0), dtype=_tch.long)
+            gdata_dict['edge_attr'] = _tch.tensor(edge_attr_list, dtype=_tch.float) if len(edge_attr_list) > 0 else _tch.empty((0,4), dtype=_tch.float)
         else:
             # all parameters are per-frame, so edge_index and edge_attr are computed per-frame and concatenated in lists
             edge_index_all = []

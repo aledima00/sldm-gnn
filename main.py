@@ -28,12 +28,11 @@ EMB_DIM = 8
 NUM_POSSIBLE_STATION_TYPES = 256
 VERBOSE = False
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
-DF_ACTIVE_LABELS = [0,1,2,3,4,5,6,7,8]
 
 # training params
-EPOCHS = 400
+EPOCHS = 200
 BATCH_SIZE = 64
-LR = 5e-4
+LR = 8e-4
 WEIGHT_DECAY = 5e-5
 
 # ------------------- Data augmentation params -------------------

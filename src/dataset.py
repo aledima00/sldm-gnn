@@ -70,15 +70,17 @@ class MapGraph(_GDataset):
             raise FileNotFoundError(f"Graph file for pack id {pid} not found at path: {fname}")
         with safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage]):
             graph:_GData = _tch.load(fname, map_location=self.device)
-            if graph.y is not None and self.active_labels is not None:
-                graph.y = self._mapLabelToDenseTensor(graph.y)
+            # TODO:CHECK REMOVED PART
+            # if graph.y is not None and self.active_labels is not None:
+            #     graph.y = self._mapLabelToDenseTensor(graph.y)
         return graph
 
     def innerGet(self,idx):
         with safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage]):
             graph:_GData = _tch.load(self.paths[idx], map_location=self.device)
-            if graph.y is not None and self.active_labels is not None:
-                graph.y = self._mapLabelToDenseTensor(graph.y)
+            # TODO:CHECK REMOVED PART
+            # if graph.y is not None and self.active_labels is not None:
+            #     graph.y = self._mapLabelToDenseTensor(graph.y)
         if self.transform:
             graph = self.transform(graph)
         if self.normalizeZScore:

@@ -2,18 +2,10 @@ from enum import IntEnum as _IE
 
 class LabelsEnum(_IE):
     LANE_CHANGE = 0
-    LANE_MERGE = 1
+    EMERGENCY_BRAKING = 1
     OVERTAKE = 2
-    BRAKING = 3
-    TURN_INTENT = 4
-    COLLISION = 5
-    PEDESTRIAN_IN_ROAD = 6
-    OBSTACLE_IN_ROAD = 7
-    TRAFFIC_JAM = 8
-
-def getMlbNames(encoded_mlb:int)->set[str]:
-    labels = set()
-    for label in LabelsEnum:
-        if (encoded_mlb & (1 << label.value)) != 0:
-            labels.add(label.name)
-    return labels
+    TURN_INTENT = 3
+    COLLISION = 4
+    LANE_MERGE = 5
+    OBSTACLE_IN_ROAD = 6
+    SLOWDOWN = 7
