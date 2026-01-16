@@ -9,6 +9,7 @@ import numpy as _np
 from dataclasses import dataclass as _dc
 from pathlib import Path as _Path
 import json as _json
+from sklearn.metrics import confusion_matrix
 
 from .tprint import TabPrint as _TabPrint
 from .labels import LabelsEnum as _LE
@@ -110,6 +111,7 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
     for epoch in _tqdm(range(epochs), desc="Training Epochs", disable=(progress_logging!='tqdm')):
         tprint(f"\n{_Back.CYAN}{_Fore.YELLOW} ---------- Epoch {epoch+1}/{epochs} ---------- {_Style.RESET_ALL}")
         with tprint.tab:
+            # ============================ Training ============================
             tprint(f"{_Fore.YELLOW}{_Style.BRIGHT}--> Training...   {_Style.RESET_ALL}")
             with tprint.tab:
                 model.train()
@@ -155,13 +157,17 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                     for i, acc in enumerate(per_label_train_acc):
                         tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
 
-            # Evaluation
+            # ============================ Validation ============================
             tprint(f"{_Fore.YELLOW}{_Style.BRIGHT}--> Validating ...   {_Style.RESET_ALL}")
             with tprint.tab:
                 model.eval()
                 val_total_loss = 0
                 tot_mlb = 0
                 tot_correct = _tch.zeros((1,act_labels_num), device=device, dtype=_tch.long)
+                val_scores = []
+                val_preds = []
+                val_gt = []
+                
 
                 with _tch.no_grad():
                     for batch in _tqdm(eval_loader, desc="Validation Batches", leave=False):
@@ -174,14 +180,38 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
 
                         # Accuracy con threshold 0.5
                         preds = (scores >= 0.5).float()
+
+                        # accuracy metrics
                         tot_correct += (preds == y).long().sum(dim=0)
                         tot_mlb += batch.num_graphs
+
+                        if act_labels_num == 1:
+                            # binary metrics collection
+                            val_scores.append(scores)
+                            val_preds.append(preds)
+                            val_gt.append(y)
+                        
             avg_val_loss = val_total_loss / len(eval_loader)
             if verbose:
                 tprint(f"Validation Loss: {avg_val_loss:.4f}")
             tot_val_accuracy = tot_correct.sum().item() / (tot_mlb * act_labels_num)
             per_label_val_acc = (tot_correct.sum(dim=0).cpu().float().numpy() / tot_mlb).tolist()
             tprint(f"{_Fore.GREEN}{_Style.BRIGHT}Validation Accuracy: {tot_val_accuracy:.4f}{_Style.RESET_ALL}")
+
+            if act_labels_num == 1:
+                # in binary tasks, compute confusion matrix and F1-score in each validation epoch (no auc roc here)
+                val_scores = _tch.cat(val_scores, dim=0).squeeze().cpu().numpy()
+                val_preds = _tch.cat(val_preds, dim=0).squeeze().cpu().numpy()
+                val_gt = _tch.cat(val_gt, dim=0).squeeze().cpu().numpy()
+
+                cm = confusion_matrix(val_gt, val_preds)
+                tn,fp,fn,tp = cm.ravel()
+                tprint(f"Validation Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}")
+                precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                tprint(f"{_Fore.MAGENTA}{_Style.BRIGHT}Validation Stats: Precision={precision:.4f}, Recall={recall:.4f}, F1-Score={f1:.4f}{_Style.RESET_ALL}")
+
             if verbose:
                 tprint(f"Per-Label Eval Accuracy:")
                 with tprint.tab:
@@ -191,6 +221,7 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         pl_vacc[:,epoch] = _np.array(per_label_val_acc)
         tot_tracc[:,epoch] = tot_train_accuracy
         tot_vacc[:,epoch] = tot_val_accuracy
+    #TODO - add roc_curve and roc_auc for last epoch if binary classification
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc)
 
 def flattenTimeAsFeatures(data):

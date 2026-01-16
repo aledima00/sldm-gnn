@@ -145,7 +145,6 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
     outpath.mkdir(parents=True, exist_ok=True)
 
     # string with all params in exp format
-    #TODO ADD CUTS
     pfname = getPlotFname(modelname, outpath,mapIncluded=include_map)
 
     if train_eval_folder:
