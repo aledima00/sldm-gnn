@@ -4,6 +4,8 @@ from pathlib import Path
 
 DEF_FNUM = 20
 DEF_RADIUS = 30.0
+DEF_MAP_LAT_CONN_MAX_ANGLE = 30.0
+DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD = 1.0
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True), required=True)
@@ -17,13 +19,17 @@ DEF_RADIUS = 30.0
 @click.option('--aggregate-edges/--no-aggregate-edges', 'aggregate_edges', default=True, help='Enable or disable edge feature aggregation when building graphs.')
 @click.option('--train-eval-folder', is_flag=True, default=False, help='If specified, build maps for train/eval folders inside the given data_path.')
 @click.option('--map-only', is_flag=True, default=False, help='If specified, only build the map without building graphs.')
-def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, no_heading_enc, flatten_time_as_graphs, aggregate_edges, train_eval_folder, map_only):
+@click.option('--map.lat-conn.max-angle', 'map_lat_conn_max_angle', type=float, default=DEF_MAP_LAT_CONN_MAX_ANGLE, help=f'Maximum angle (in degrees) for lateral connections in the map building step (default: {DEF_MAP_LAT_CONN_MAX_ANGLE}).')
+@click.option('--map.lat-conn.proximity-threshold', 'map_lat_conn_proximity_threshold', type=float, default=DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD, help=f'Proximity threshold (in meters) for lateral connections in the map building step (default: {DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD}).')
+def main(data_path, radius_threshold, active_label, frames_num, no_rescaling, remove_dims, no_heading_enc, flatten_time_as_graphs, aggregate_edges, train_eval_folder, map_only, map_lat_conn_max_angle, map_lat_conn_proximity_threshold):
     dp = Path(data_path).resolve()
     map_filepath = dp / 'vmap.parquet'
 
     click.echo(f"Building common map...")
     map_builder = MapBuilder(
-        map_filepath
+        map_filepath,
+        lat_conn_max_angle_deg=map_lat_conn_max_angle,
+        lat_conn_proximity_threshold=map_lat_conn_proximity_threshold
     )
     map_builder.save()
     if map_only:

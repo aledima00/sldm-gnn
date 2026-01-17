@@ -207,8 +207,10 @@ def logworker(*,progress_queue:_Queue,total:int):
 
 class MapBuilder:
     filepath: _Path
-    def __init__(self, filepath:_Path):
+    def __init__(self, filepath:_Path, lat_conn_max_angle_deg:float, lat_conn_proximity_threshold:float):
         self.filepath = filepath.resolve()
+        self.lat_conn_max_angle_deg = lat_conn_max_angle_deg
+        self.lat_conn_proximity_threshold = lat_conn_proximity_threshold
         savedir = self.filepath.parent / '.map'
         if not savedir.exists():
             savedir.mkdir(parents=True, exist_ok=True)
@@ -311,10 +313,8 @@ class MapBuilder:
 
                     # LANE-LATERAL NEIGH connections: check angle similarity and proximity
                     delta_angle = _np.abs(ang_i - ang_j).item()
-                    #TODO: add delta angle as param
-                    if delta_angle < _np.deg2rad(30):  # approximately same direction
-                        #TODO: add proximity threshold as param
-                        if self.segmentsDistance(start_i,end_i,w_i,start_j,end_j,w_j).item() < 1.0:
+                    if delta_angle < _np.deg2rad(self.lat_conn_max_angle_deg):  # approximately same direction
+                        if self.segmentsDistance(start_i,end_i,w_i,start_j,end_j,w_j).item() < self.lat_conn_proximity_threshold:
                             #FIXME: use connections only if lanes are directionally compatible
                             # L-R connections
                             if cgr_i.item() and cgl_j.item():

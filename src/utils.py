@@ -9,7 +9,7 @@ import numpy as _np
 from dataclasses import dataclass as _dc
 from pathlib import Path as _Path
 import json as _json
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix as _confmat, roc_auc_score as _rocauc
 
 from .tprint import TabPrint as _TabPrint
 from .labels import LabelsEnum as _LE
@@ -108,6 +108,11 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
     pl_vacc = _np.zeros((act_labels_num,epochs), dtype=_np.float32)
     tot_vacc = _np.zeros((1,epochs), dtype=_np.float32)
 
+    best_val_acc_epoch_idx = -1
+    best_val_acc = None
+    best_cm = None
+    best_roc_auc = None
+
     for epoch in _tqdm(range(epochs), desc="Training Epochs", disable=(progress_logging!='tqdm')):
         tprint(f"\n{_Back.CYAN}{_Fore.YELLOW} ---------- Epoch {epoch+1}/{epochs} ---------- {_Style.RESET_ALL}")
         with tprint.tab:
@@ -118,7 +123,6 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                 train_total_loss = 0
                 tot_mlb = 0
                 tot_correct = _tch.zeros((1,act_labels_num), device=device, dtype=_tch.long)
-                # TODO decide whether to use tqdm here or not
                 for i,batch in enumerate(_tqdm(train_loader, desc="Training Batches", leave=False)):
                     batch = batch.to(device)
                     optimizer.zero_grad()
@@ -204,13 +208,14 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                 val_preds = _tch.cat(val_preds, dim=0).squeeze().cpu().numpy()
                 val_gt = _tch.cat(val_gt, dim=0).squeeze().cpu().numpy()
 
-                cm = confusion_matrix(val_gt, val_preds)
+                cm = _confmat(val_gt, val_preds)
                 tn,fp,fn,tp = cm.ravel()
                 tprint(f"Validation Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}")
                 precision = tp / (tp + fp) if (tp + fp) > 0 else 0
                 recall = tp / (tp + fn) if (tp + fn) > 0 else 0
                 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                tprint(f"{_Fore.MAGENTA}{_Style.BRIGHT}Validation Stats: Precision={precision:.4f}, Recall={recall:.4f}, F1-Score={f1:.4f}{_Style.RESET_ALL}")
+                roc_auc = _rocauc(val_gt, val_scores)
+                tprint(f"{_Fore.MAGENTA}{_Style.BRIGHT}Validation Stats: Precision={precision:.4f}, Recall={recall:.4f}, F1-Score={f1:.4f}{_Style.RESET_ALL}, ROC AUC={roc_auc:.4f}")
 
             if verbose:
                 tprint(f"Per-Label Eval Accuracy:")
@@ -221,11 +226,18 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         pl_vacc[:,epoch] = _np.array(per_label_val_acc)
         tot_tracc[:,epoch] = tot_train_accuracy
         tot_vacc[:,epoch] = tot_val_accuracy
-    #TODO - add roc_curve and roc_auc for last epoch if binary classification
-    return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc)
+
+        if best_val_acc is None or tot_val_accuracy > best_val_acc:
+            best_val_acc = tot_val_accuracy
+            best_val_acc_epoch_idx = epoch
+            if act_labels_num == 1:
+                best_cm = cm
+                best_roc_auc = roc_auc
+            
+    best_idx_values = (best_val_acc_epoch_idx, best_val_acc, best_cm, best_roc_auc)
+    return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc), best_idx_values
 
 def flattenTimeAsFeatures(data):
-    # TODO - add sincos time encoding option here
     """
     Flattens temporal dimension, bringing samples from shape [vehicles/nodes/batches, frames, features] to [vehicles/nodes/batches, frames*features]
     """ 
