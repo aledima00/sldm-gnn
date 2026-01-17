@@ -48,7 +48,7 @@ GS_GRU_NUM_LAYERS=1
 GS_FC1_DIMS = [48]
 GS_SAGE_HIDDEN_DIMS = [48, 48]
 GS_FC2_DIMS = [16]
-GS_DROPOUT = 0.1
+GS_DROPOUT = 0.2
 GS_NEGSLOPE = None
 GS_GPOOLING = 'double'
 
@@ -247,7 +247,7 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
     )
-    return (tot_tracc, tot_vacc), best_stats
+    return (tot_tracc, tot_vacc, best_stats)
 
 def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None):
     match modelname:
