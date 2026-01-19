@@ -108,17 +108,17 @@ def getParams(model:ModelOptsType, best_stats:tuple|None, cut:int|None=None) -> 
     """ Parameters as string for plot text box """
     match model:
         case 'grusage':
-            params = f"GRUSAGE model parameters:\n - GRU hidden size: {GS_GRU_HIDDEN_SIZE}\n - GRU num layers: {GS_GRU_NUM_LAYERS}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Dropout: {GS_DROPOUT}\n - ReLU Neg. slope: {GS_NEGSLOPE}\n"
+            params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HIDDEN_SIZE}, num layers = {GS_GRU_NUM_LAYERS}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MAPENC_LANE_EMBDIM}, Sage HDims = {GS_MAPENC_SAGE_HDIMS}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
         case 'sagegru':
-            params = f"SAGEGRU model parameters:\n - SAGE hidden dims: {SG_SAGE_HIDDEN_DIMS}\n - FC1 dims: {SG_FC1_DIMS}\n - GRU hidden size: {SG_GRU_HIDDEN_SIZE}\n - GRU num layers: {SG_GRU_NUM_LAYERS}\n - FC2 dims: {SG_FC2_DIMS}\n - Dropout: {SG_DROPOUT}\n - ReLU Neg. slope: {SG_NEGSLOPE}\n"
+            params = f"SAGEGRU model parameters:\n - Embedding size for station types: {EMB_DIM}\n - SAGE hidden dims: {SG_SAGE_HIDDEN_DIMS}\n - FC1 dims: {SG_FC1_DIMS}\n - GRU hidden size: {SG_GRU_HIDDEN_SIZE}\n - GRU num layers: {SG_GRU_NUM_LAYERS}\n - FC2 dims: {SG_FC2_DIMS}\n - Dropout: {SG_DROPOUT}\n - ReLU Neg. slope: {SG_NEGSLOPE}\n"
         case 'grugat':
-            params = f"GRUGAT model parameters:\n - GRU hidden size: {GG_GRU_HIDDEN_SIZE}\n - GRU num layers: {GG_GRU_NUM_LAYERS}\n - FC1 dims: {GG_FCDIMS1}\n - GAT hidden dims: {GG_GAT_HIDDEN_DIMS}\n - GAT nheads: {GG_GAT_NHEADS}\n - FC2 dims: {GG_FCDIMS2}\n - Dropout: {GG_DROPOUT}\n - ReLU Neg. slope: {GG_NEGSLOPE}\n"
+            params = f"GRUGAT model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU hidden size: {GG_GRU_HIDDEN_SIZE}\n - GRU num layers: {GG_GRU_NUM_LAYERS}\n - FC1 dims: {GG_FCDIMS1}\n - GAT hidden dims: {GG_GAT_HIDDEN_DIMS}\n - GAT nheads: {GG_GAT_NHEADS}\n - FC2 dims: {GG_FCDIMS2}\n - Dropout: {GG_DROPOUT}\n - ReLU Neg. slope: {GG_NEGSLOPE}\n"
         case 'grufc':
-            params = f"GRUFC model parameters:\n - GRU hidden size: {GF_GRU_HIDDEN_SIZE}\n - GRU num layers: {GF_GRU_NUM_LAYERS}\n - FC dims: {GF_FCDIMS}\n - Dropout: {GF_DROPOUT}\n - ReLU Neg. slope: {GF_NEGSLOPE}\n"
+            params = f"GRUFC model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU hidden size: {GF_GRU_HIDDEN_SIZE}\n - GRU num layers: {GF_GRU_NUM_LAYERS}\n - FC dims: {GF_FCDIMS}\n - Dropout: {GF_DROPOUT}\n - ReLU Neg. slope: {GF_NEGSLOPE}\n"
         case _:
             raise ValueError(f"Unknown model type: {model}")
-        
-    params += f"Embedding size for station types: {EMB_DIM}\n"
+
+    params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
     params += "Data Augmentation:\n"
     if TF_ROTATE:
