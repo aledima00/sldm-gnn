@@ -51,6 +51,9 @@ GS_FC2_DIMS = [16]
 GS_DROPOUT = 0.2
 GS_NEGSLOPE = None
 GS_GPOOLING = 'double'
+GS_MAPENC_LANE_EMBDIM = 2
+GS_MAPENC_SAGE_HDIMS = [8,8]
+GS_MAPATTENTION_TOPK = 5
 
 # ------------------- SAGEGRU parameters -------------------
 SG_SAGE_HIDDEN_DIMS = [32, 32]
@@ -116,7 +119,7 @@ def getParams(model:ModelOptsType, best_stats:tuple|None, cut:int|None=None) -> 
             raise ValueError(f"Unknown model type: {model}")
         
     params += f"Embedding size for station types: {EMB_DIM}\n"
-    params += f"Training Parameters:\n - Epochs: {EPOCHS}\n - Batch size: {BATCH_SIZE}\n - Learning rate: {LR}\n - Weight decay: {WEIGHT_DECAY}\n"
+    params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
     params += "Data Augmentation:\n"
     if TF_ROTATE:
         params += " - Random Rotate\n"
@@ -129,7 +132,7 @@ def getParams(model:ModelOptsType, best_stats:tuple|None, cut:int|None=None) -> 
         params += f" - Cutting after: {cut} frames\n"
 
     (best_vacc_idx, best_vacc, best_cm, best_roc_auc) = best_stats
-    params += f"--------------------------\nResults for Best-Performing Val. Snapshot (@idx[{best_vacc_idx}]):\n"
+    params += f"---------------------------------------------------------------------------\nResults for Best-Performing Val. Snapshot (@idx[{best_vacc_idx}]):\n"
     params += f" - Validation Accuracy: {best_vacc:.4f}\n"
     if best_cm is not None and best_roc_auc is not None:
         tn, fp, fn, tp = best_cm.ravel()
@@ -289,7 +292,10 @@ def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=Non
                 dropout=GS_DROPOUT,
                 negative_slope=GS_NEGSLOPE,
                 global_pooling=GS_GPOOLING,
-                map_tensors=map_tensors
+                map_tensors=map_tensors,
+                mapenc_lane_embdim=GS_MAPENC_LANE_EMBDIM,
+                mapenc_sage_hdims=GS_MAPENC_SAGE_HDIMS,
+                map_attention_topk=GS_MAPATTENTION_TOPK
             )
         case 'sagegru':
             return SageGru(

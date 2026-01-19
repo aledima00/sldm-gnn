@@ -9,7 +9,7 @@ from .map.mapattention import MapSpatialAttention as _MapSpatialAttention
 from .map.mapInputNorm import MapZscoreNorm as _MapZscoreNorm
 
 class GruSage(_nn.Module):
-    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None):
+    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5):
         super().__init__()
 
         #TODO validate inputs
@@ -55,12 +55,15 @@ class GruSage(_nn.Module):
                 map_bool_features = map_tensors['bool_features'],
                 lane_type_cats=map_tensors['lane_type_cats'],
                 graph_edge_indexes=map_tensors['mgraph_edge_indexes'],
+                lane_embed_dim = mapenc_lane_embdim,
+                sage_hidden_dims=mapenc_sage_hdims,
                 dropout=dropout,
                 negative_slope=negative_slope
             )
             #TODO add attention specs
             self.map_attention = _MapSpatialAttention(
-                map_centroids=map_tensors['mseg_centroids']
+                map_centroids=map_tensors['mseg_centroids'],
+                k_neighbors=map_attention_topk
             )
 
             last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
