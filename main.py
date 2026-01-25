@@ -30,29 +30,29 @@ VERBOSE = False
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 
 # training params
-EPOCHS = 200
-BATCH_SIZE = 64
-LR = 8e-4
-WEIGHT_DECAY = 5e-5
+EPOCHS = 100
+BATCH_SIZE = 32
+LR = 5e-4
+WEIGHT_DECAY = 1e-4
 
 # ------------------- Data augmentation params -------------------
 TF_ROTATE = False
 TF_POS_NOISE = True
-POS_NOISE_STD=0.1
-POS_NOISE_STD_MAX = 0.1
+POS_NOISE_STD=0.2
+POS_NOISE_STD_MAX = 0.2
 POS_NOISE_PROPTO_SPEED = True # if True, noise std is multiplied by node speed
 
 # ------------------- GRUSAGE parameters -------------------
-GS_GRU_HIDDEN_SIZE = 48
-GS_GRU_NUM_LAYERS=1
-GS_FC1_DIMS = [48]
-GS_SAGE_HIDDEN_DIMS = [48, 48]
-GS_FC2_DIMS = [16]
-GS_DROPOUT = 0.2
-GS_NEGSLOPE = None
+GS_GRU_HIDDEN_SIZE = 64
+GS_GRU_NUM_LAYERS=2
+GS_FC1_DIMS = []
+GS_SAGE_HIDDEN_DIMS = [64, 64]
+GS_FC2_DIMS = [64, 32]
+GS_DROPOUT = 0.20
+GS_NEGSLOPE = 0.05
 GS_GPOOLING = 'double'
-GS_MAPENC_LANE_EMBDIM = 2
-GS_MAPENC_SAGE_HDIMS = [8,8]
+GS_MAPENC_LANE_EMBDIM = 4
+GS_MAPENC_SAGE_HDIMS = [32, 32]
 GS_MAPATTENTION_TOPK = 5
 
 # ------------------- SAGEGRU parameters -------------------
