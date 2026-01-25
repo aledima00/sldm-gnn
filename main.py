@@ -103,7 +103,7 @@ def getPlotFname(model:ModelOptsType, outdir:Path,mapIncluded:bool)->str:
         if not (outdir / fname).exists():
             return fname
         
-def getParams(model:ModelOptsType, best_stats:tuple|None, cut:int|None=None) -> str:
+def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None) -> str:
     #TODO: improve formatting
     """ Parameters as string for plot text box """
     match model:
@@ -131,16 +131,16 @@ def getParams(model:ModelOptsType, best_stats:tuple|None, cut:int|None=None) -> 
     if cut is not None:
         params += f" - Cutting after: {cut} frames\n"
 
-    (best_vacc_idx, best_vacc, best_cm, best_roc_auc) = best_stats
-    params += f"---------------------------------------------------------------------------\nResults for Best-Performing Val. Snapshot (@idx[{best_vacc_idx}]):\n"
-    params += f" - Validation Accuracy: {best_vacc:.4f}\n"
-    if best_cm is not None and best_roc_auc is not None:
-        tn, fp, fn, tp = best_cm.ravel()
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        params += f" - Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}\n"
-        params += f" - Precision: {precision:.4f}, Recall: {recall:.4f}\n"
-        params += f" - ROC AUC: {best_roc_auc:.4f}\n"
+    best_vacc_idx = tot_vacc[0,:].argmax()
+    best_vacc = tot_vacc[0,best_vacc_idx]
+    params += f"\nBest Val. Acc.: {best_vacc:.4f}, @ep.{best_vacc_idx}\n"
+
+    if bin_stats is not None:
+        (bin_cm_flat_values, bin_rocauc_values) = bin_stats
+
+        best_rocauc_idx = bin_rocauc_values[0,:].argmax()
+        best_rocauc = bin_rocauc_values[0,best_rocauc_idx]
+        params += f"Best Val. ROC AUC: {best_rocauc:.4f}, @ep.{best_rocauc_idx}\n"
         
     return params
     
@@ -209,18 +209,31 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
 
     model = getModel(modelname,tr_metadata,map_tensors=map_tensors)
     
-    (tot_tracc, tot_vacc, best_stats) = runModel(model, tr_metadata, dl_train, dl_eval)
-    plotAccuracies(tot_tracc,tot_vacc,best_stats, modelname, outpath / pfname, lbnum, cut=cut)
+    (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval)
+    plotAccuracies(tot_tracc,tot_vacc,bin_stats, modelname, outpath / pfname, lbnum, cut=cut)
 
-def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, best_stats:tuple, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut):
+def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut):
     fig, (ax_plot, ax_text) = plt.subplots(
         1, 2,
         figsize=(10,4),
         gridspec_kw={'width_ratios': [3, 2]}
     )
     plt_yticks = np.arange(-0.1, 1.2, 0.1)
-    ax_plot.plot(tot_vacc[0,:], label='Val. Acc.')
-    ax_plot.plot(tot_tracc[0,:], linestyle='--', label='Tr. Acc.')
+    ax_plot.plot(tot_vacc[0,:], color='blue', label='Val. Acc.')
+    ax_plot.plot(tot_tracc[0,:], color='orange', linestyle='--', label='Tr. Acc.')
+
+    if bin_stats is not None:
+        (bin_cm_flat_values, bin_rocauc_values) = bin_stats
+        tn=bin_cm_flat_values[0,:]
+        fp=bin_cm_flat_values[1,:]
+        fn=bin_cm_flat_values[2,:]
+        tp=bin_cm_flat_values[3,:]
+        precision = tp / (tp + fp + 1e-8)
+        recall = tp / (tp + fn + 1e-8)
+        ax_plot.plot(bin_rocauc_values[0,:], color='purple', label='Val. ROC AUC')
+        ax_plot.plot(precision, color='green', alpha=0.2, label='Val. Precision')
+        ax_plot.plot(recall, color='red', alpha=0.2, label='Val. Recall')
+
     ax_plot.set_ylim(bottom=0,top=1)
     ax_plot.set_yticks(plt_yticks)
     ax_plot.grid(True)
@@ -228,7 +241,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, best_stats:tuple, 
     ax_plot.set_title(f'Validation Accuracy for label #{lbnum}')
     
     # text box with final results
-    params_text = getParams(modelname, best_stats, cut=cut)
+    params_text = getParams(modelname, bin_stats, tot_vacc, cut=cut)
     ax_text.axis('off')
     ax_text.text(0,0.95, params_text, va='top')
 
@@ -237,7 +250,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, best_stats:tuple, 
     plt.close(fig)
 
 def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
-    (_, tot_tracc),(_, tot_vacc), best_stats = train_model(
+    (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
         dl_eval,
@@ -250,7 +263,7 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
     )
-    return (tot_tracc, tot_vacc, best_stats)
+    return (tot_tracc, tot_vacc, bin_stats)
 
 def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None):
     match modelname:

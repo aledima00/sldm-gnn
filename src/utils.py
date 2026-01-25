@@ -107,11 +107,9 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
     tot_tracc = _np.zeros((1,epochs), dtype=_np.float32)
     pl_vacc = _np.zeros((act_labels_num,epochs), dtype=_np.float32)
     tot_vacc = _np.zeros((1,epochs), dtype=_np.float32)
-
-    best_val_acc_epoch_idx = -1
-    best_val_acc = None
-    best_cm = None
-    best_roc_auc = None
+    if act_labels_num==1:
+        bin_cm_flat_values = _np.zeros((4,epochs), dtype=_np.int32)  # tn,fp,fn,tp
+        bin_rocauc_values = _np.zeros((1,epochs), dtype=_np.float32)
 
     for epoch in _tqdm(range(epochs), desc="Training Epochs", disable=(progress_logging!='tqdm')):
         tprint(f"\n{_Back.CYAN}{_Fore.YELLOW} ---------- Epoch {epoch+1}/{epochs} ---------- {_Style.RESET_ALL}")
@@ -216,6 +214,9 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
                 roc_auc = _rocauc(val_gt, val_scores)
                 tprint(f"{_Fore.MAGENTA}{_Style.BRIGHT}Validation Stats: Precision={precision:.4f}, Recall={recall:.4f}, F1-Score={f1:.4f}{_Style.RESET_ALL}, ROC AUC={roc_auc:.4f}")
+                # store binary metrics
+                bin_cm_flat_values[:,epoch] = _np.array([tn,fp,fn,tp], dtype=_np.int32)
+                bin_rocauc_values[0,epoch] = roc_auc
 
             if verbose:
                 tprint(f"Per-Label Eval Accuracy:")
@@ -227,15 +228,7 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         tot_tracc[:,epoch] = tot_train_accuracy
         tot_vacc[:,epoch] = tot_val_accuracy
 
-        if best_val_acc is None or tot_val_accuracy > best_val_acc:
-            best_val_acc = tot_val_accuracy
-            best_val_acc_epoch_idx = epoch
-            if act_labels_num == 1:
-                best_cm = cm
-                best_roc_auc = roc_auc
-            
-    best_idx_values = (best_val_acc_epoch_idx, best_val_acc, best_cm, best_roc_auc)
-    return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc), best_idx_values
+    return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc), ((bin_cm_flat_values, bin_rocauc_values) if act_labels_num==1 else None)
 
 def flattenTimeAsFeatures(data):
     """
