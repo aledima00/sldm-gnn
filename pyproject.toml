@@ -12,10 +12,26 @@ dependencies = [
     "pandas>=2.3.3",
     "pyarrow>=22.0.0",
     "scikit-learn>=1.8.0",
-    "torch==2.8.0",
     "torch-geometric>=2.7.0",
-    "torchvision==0.23.0",
     "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+cpu = [
+  "torch==2.8.0",
+  "torchvision==0.23.0",
+]
+cuda = [
+  "torch==2.8.0",
+  "torchvision==0.23.0",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cuda" },
+  ],
 ]
 
 [[tool.uv.index]]
@@ -24,29 +40,16 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [[tool.uv.index]]
-name = "pyg-torch280-cu128"
-url = "https://data.pyg.org/whl/torch-2.8.0+cu128.html"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128" },
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "cuda" },
 ]
 torchvision = [
-    { index = "pytorch-cu128" },
-]
-pyg_lib = [
-    { index = "pyg-torch280-cu128" },
-]
-torch_scatter = [
-    { index = "pyg-torch280-cu128" },
-]
-torch_sparse = [
-    { index = "pyg-torch280-cu128" },
-]
-torch_cluster = [
-    { index = "pyg-torch280-cu128" },
-]
-torch_spline_conv = [
-    { index = "pyg-torch280-cu128" },
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "cuda" },
 ]
