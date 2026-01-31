@@ -2,7 +2,7 @@ import torch as _tch
 from torch.utils.data import random_split as _rsplit
 from torch_geometric.loader import DataLoader as _GDL
 from torch_geometric.data import Dataset as _GDataset
-from typing import Literal as _Lit
+from typing import Literal as _Lit, Iterable as _Iterable, Any as _Any, List as _List, Tuple as _Tuple, Callable as _Callable, TypeAlias as _TA
 from colorama import Fore as _Fore, Back as _Back, Style as _Style
 from tqdm.auto import tqdm as _tqdm
 import numpy as _np
@@ -10,6 +10,7 @@ from dataclasses import dataclass as _dc
 from pathlib import Path as _Path
 import json as _json
 from sklearn.metrics import confusion_matrix as _confmat, roc_auc_score as _rocauc
+from itertools import product as _iproduct
 
 from .tprint import TabPrint as _TabPrint
 from .labels import LabelsEnum as _LE
@@ -17,6 +18,64 @@ from .labels import LabelsEnum as _LE
 Progress_logging_options = _Lit['clilog', 'tqdm', 'none']
 
 FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
+
+
+callTuple: _TA = _Tuple[_Callable, str]
+class ParamSweepContext:
+
+    def __init__(self,params_dict:dict[str, _List|callTuple]):
+        """
+        
+        :param params_dict: a dictionary where keys are parameter names and values are either lists of values to sweep, or tuples of (callable, dependency_param_name) where callable is a function that takes the value of the dependency parameter and returns a list of values to sweep.
+        """
+        for name, val in params_dict.items():
+            assert isinstance(name, str), f"Parameter name must be a string, got {type(name)}"
+            assert isinstance(val, (list, tuple)), f"Parameter values must be a list or a (callable, str) tuple, got {type(val)} for parameter '{name}'"
+            if isinstance(val, tuple):
+                assert len(val) == 2, f"Parameter value tuple must have length 2, got {len(val)} for parameter '{name}'"
+                assert callable(val[0]), f"First element of parameter value tuple must be callable, got {type(val[0])} for parameter '{name}'"
+                assert isinstance(val[1], str), f"Second element of parameter value tuple must be a string (dependency parameter name), got {type(val[1])} for parameter '{name}'"
+        
+        
+        self._lambdas = {name:val for name,val in params_dict.items() if isinstance(val, tuple)}
+        pd = params_dict.copy()
+        for name in self._lambdas.keys():
+            del pd[name]
+
+        val_keys = list(pd.keys())
+        self._params_idx = {name:idx for idx,name in enumerate(val_keys)}
+        self._values_list = [params_dict[name] for name in val_keys]
+        
+
+    
+    # define generator that yields all combinations of parameters, in form of key-value dicts
+    def combinations(self)->_Iterable[dict[str, _Any]]:
+        """
+        Generate the combinations dict of parameter values.
+        Yields:
+            dict[str, Any]: A dictionary where keys are parameter names and values are the corresponding parameter
+        """
+        
+        # generate all combinations of parameter values
+        for cur_comb_tuple in _iproduct(*self._values_list):
+            comb_dict = {name:cur_comb_tuple[idx] for name, idx in self._params_idx.items()}
+            # evaluate lambdas with current combination
+            for name, (func, dep_name) in self._lambdas.items():
+                dep_value = comb_dict.get(dep_name)
+                if dep_value is None:
+                    raise ValueError(f"Dependency parameter '{dep_name}' not found in current combination for parameter '{name}'")
+                comb_dict[name] = func(dep_value)
+            #print(f"current comb dict:", comb_dict)
+            yield comb_dict
+
+    def __len__(self)->int:
+        """
+        Returns the total number of combinations in the sweep.
+        """
+        tot = 1
+        for vals in self._values_list:
+            tot *= len(vals)
+        return tot
 
 @_dc
 class MetaData:

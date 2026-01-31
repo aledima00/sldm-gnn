@@ -3,7 +3,7 @@ from torch_geometric.loader import DataLoader as GDL
 import torch_geometric.transforms as T
 from pathlib import Path
 import colorama
-from colorama import Fore, Style
+from colorama import Fore, Style, Back
 import numpy as np
 from typing import Literal as Lit
 from matplotlib import pyplot as plt
@@ -16,44 +16,45 @@ from src.models.sagegru import SageGru
 from src.models.grugat import GRUGAT
 from src.models.grufc import GruFC
 import src.transforms as TFs
-from src.utils import train_model, split_tr_ev_3to1, MetaData
-
+from src.utils import train_model, split_tr_ev_3to1, MetaData, ParamSweepContext
 colorama.init(autoreset=True)
 
 ModelOptsType = Lit['grusage','sagegru','grugat', 'grufc']
-
-
-# general params
-EMB_DIM = 8
-NUM_POSSIBLE_STATION_TYPES = 256
-VERBOSE = False
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 
-# training params
-EPOCHS = 100
-BATCH_SIZE = 32
-LR = 5e-4
-WEIGHT_DECAY = 1e-4
 
-# ------------------- Data augmentation params -------------------
-TF_ROTATE = False
-TF_POS_NOISE = True
-POS_NOISE_STD=0.2
-POS_NOISE_STD_MAX = 0.2
-POS_NOISE_PROPTO_SPEED = True # if True, noise std is multiplied by node speed
+GRUSAGE_PARAMS_DICT = {
+    "epochs":[200],
+    "batch_size":[32],
+    "lr":[3e-4],
+    "weight_decay":[5e-5],
 
-# ------------------- GRUSAGE parameters -------------------
-GS_GRU_HIDDEN_SIZE = 64
-GS_GRU_NUM_LAYERS=2
-GS_FC1_DIMS = []
-GS_SAGE_HIDDEN_DIMS = [64, 64]
-GS_FC2_DIMS = [64, 32]
-GS_DROPOUT = 0.20
-GS_NEGSLOPE = 0.05
-GS_GPOOLING = 'double'
-GS_MAPENC_LANE_EMBDIM = 4
-GS_MAPENC_SAGE_HDIMS = [32, 32]
-GS_MAPATTENTION_TOPK = 5
+    "tf_rotate":[False], #FIXME: bad implementation of rotation for map data
+    "tf_pos_noise":[True],
+    "pos_noise_std":[0.2],
+    "pos_noise_std_max":[0.2],
+    "pos_noise_prop_to_speed":[True],
+
+    "emb_dim":[8],
+    "num_possible_station_types":[256],
+
+    "gs_dropout":[0.1],
+    "gs_neg_slope":[0.05],
+
+    "gs_hidden_size":[64],
+    "gs_gru_hidden_size":(lambda hs: hs, "gs_hidden_size"),
+    "gs_gru_num_layers":[1],
+    "gs_fc1_dims":(lambda hs: [],"gs_hidden_size") , #+[] #TODO:REMOVE
+    "gs_sage_hidden_dims":(lambda hs: [hs, hs],"gs_hidden_size"),
+    "gs_pooling":['double'],
+    "gs_fc2_dims":(lambda hs: [hs//3],"gs_hidden_size"),
+
+    "gs_map_hidden_size":[32],
+    "gs_mapenc_lane_embdim":(lambda mhs: mhs//4,"gs_map_hidden_size"),
+    "gs_mapenc_sage_hdims":(lambda mhs: [mhs, mhs],"gs_map_hidden_size"),
+    "gs_map_attention_topk":[5]
+}
+
 
 # ------------------- SAGEGRU parameters -------------------
 SG_SAGE_HIDDEN_DIMS = [32, 32]
@@ -103,12 +104,28 @@ def getPlotFname(model:ModelOptsType, outdir:Path,mapIncluded:bool)->str:
         if not (outdir / fname).exists():
             return fname
         
-def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None) -> str:
-    #TODO: improve formatting
+def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
     """ Parameters as string for plot text box """
+    #TODO: improve formatting
+
+    EMB_DIM = combDict.get('emb_dim')
+    EPOCHS = combDict.get('epochs')
+    BATCH_SIZE = combDict.get('batch_size')
+    LR = combDict.get('lr')
+    WEIGHT_DECAY = combDict.get('weight_decay')
     match model:
         case 'grusage':
-            params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HIDDEN_SIZE}, num layers = {GS_GRU_NUM_LAYERS}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MAPENC_LANE_EMBDIM}, Sage HDims = {GS_MAPENC_SAGE_HDIMS}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
+            GS_GRU_HS = combDict.get('gs_gru_hidden_size')
+            GS_GRU_NL = combDict.get('gs_gru_num_layers')
+            GS_FC1_DIMS = combDict.get('gs_fc1_dims')
+            GS_SAGE_HIDDEN_DIMS = combDict.get('gs_sage_hidden_dims')
+            GS_FC2_DIMS = combDict.get('gs_fc2_dims')
+            GS_DROPOUT = combDict.get('gs_dropout')
+            GS_NEGSLOPE = combDict.get('gs_neg_slope')
+            GS_MELD = combDict.get('gs_mapenc_lane_embdim')
+            GS_MESD = combDict.get('gs_mapenc_sage_hdims')
+            GS_MAPATTENTION_TOPK = combDict.get('gs_map_attention_topk')
+            params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HS}, num layers = {GS_GRU_NL}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MELD}, Sage HDims = {GS_MESD}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
         case 'sagegru':
             params = f"SAGEGRU model parameters:\n - Embedding size for station types: {EMB_DIM}\n - SAGE hidden dims: {SG_SAGE_HIDDEN_DIMS}\n - FC1 dims: {SG_FC1_DIMS}\n - GRU hidden size: {SG_GRU_HIDDEN_SIZE}\n - GRU num layers: {SG_GRU_NUM_LAYERS}\n - FC2 dims: {SG_FC2_DIMS}\n - Dropout: {SG_DROPOUT}\n - ReLU Neg. slope: {SG_NEGSLOPE}\n"
         case 'grugat':
@@ -121,12 +138,14 @@ def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, c
     params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
     params += "Data Augmentation:\n"
-    if TF_ROTATE:
+    if combDict.get('tf_rotate'):
         params += " - Random Rotate\n"
-    if TF_POS_NOISE:
-        if POS_NOISE_PROPTO_SPEED:
+    if combDict.get('tf_pos_noise'):
+        if combDict.get('pos_noise_prop_to_speed'):
+            POS_NOISE_STD_MAX = combDict.get('pos_noise_std_max')
             params += f" - Add Noise on Positions (X,Y) prop to speed, with max std: {POS_NOISE_STD_MAX}\n"
         else:
+            POS_NOISE_STD = combDict.get('pos_noise_std')
             params += f" - Add Noise on Positions (X,Y) with std: {POS_NOISE_STD}\n"
     if cut is not None:
         params += f" - Cutting after: {cut} frames\n"
@@ -152,67 +171,80 @@ def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, c
 @click.option('--train-eval-folder', is_flag=True, default=False, help='If set, looks for train/eval subfolders in inputdir')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
 @click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
-def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None, include_map:bool):
+@click.option('-v', '--verbose','verbosity_level', count=True, help='Verbosity level: -v for verbose, -vv for more verbose, -vvv for debug.')
+def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None, include_map:bool, verbosity_level:int):
+    psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
+    tot_cmb = len(psc)
+    print(f"TOT_COMBINATIONS={tot_cmb}")
+    if not click.confirm("Do you want to proceed to train with all of the combinations?",default=True):
+        return
 
-    inpath = inputdir.resolve()
-    outpath = outdir.resolve()
-    outpath.mkdir(parents=True, exist_ok=True)
+    for i,combDict in enumerate(psc.combinations()):
+        
+        print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}/{tot_cmb}{Style.RESET_ALL}")
 
-    # string with all params in exp format
-    pfname = getPlotFname(modelname, outpath,mapIncluded=include_map)
+        inpath = inputdir.resolve()
+        outpath = outdir.resolve()
+        outpath.mkdir(parents=True, exist_ok=True)
 
-    if train_eval_folder:
-        tr_gpath = inpath / 'train' / '.graphs'
-        ev_gpath = inpath / 'eval' / '.graphs'
-        tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
-        ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
-    else:
-        gpath = inpath / '.graphs'
-        metadata = MetaData.loadJson(gpath / 'metadata.json')
-        tr_metadata = metadata
-        ev_metadata = metadata
+        # string with all params in exp format
+        pfname = getPlotFname(modelname, outpath,mapIncluded=include_map)
 
-    transform = []
-    if TF_ROTATE:
-        transform.append( TFs.RandomRotate(metadata=tr_metadata) )
-    if TF_POS_NOISE:
-        transform.append( TFs.AddNoise(target='pos', std=POS_NOISE_STD_MAX if POS_NOISE_PROPTO_SPEED else POS_NOISE_STD, prop_to_speed=POS_NOISE_PROPTO_SPEED, metadata=tr_metadata) )
-    if cut is not None:
-        transform.append( TFs.CutFrames(cut) )
-    
-    transform = T.Compose(transform)
-    
-    
-    print(f" - Using device: {DEVICE}")
+        if train_eval_folder:
+            tr_gpath = inpath / 'train' / '.graphs'
+            ev_gpath = inpath / 'eval' / '.graphs'
+            tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
+            ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
+        else:
+            gpath = inpath / '.graphs'
+            metadata = MetaData.loadJson(gpath / 'metadata.json')
+            tr_metadata = metadata
+            ev_metadata = metadata
 
-    if train_eval_folder:
-        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
-        mu_sigma = d_train.getMuSigma()
-        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
-    else:
-        ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
-        d_train,d_eval = split_tr_ev_3to1(ds)
+        transform = []
+        if combDict.get('tf_rotate'):
+            transform.append( TFs.RandomRotate(metadata=tr_metadata) )
+        if combDict.get('tf_pos_noise'):
+            posnoisestd = combDict.get('pos_noise_std')
+            posnoisestdmax = combDict.get('pos_noise_std_max')
+            posnoiseproptospeed = combDict.get('pos_noise_prop_to_speed')
+            transform.append( TFs.AddNoise(target='pos', std=posnoisestdmax if posnoiseproptospeed else posnoisestd, prop_to_speed=posnoiseproptospeed, metadata=tr_metadata) )
+        if cut is not None:
+            transform.append( TFs.CutFrames(cut) )
+        
+        transform = T.Compose(transform)
+        
+        
+        print(f" - Using device: {DEVICE}")
 
-    print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
-    print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
-    # create data loaders
-    dl_train = GDL(d_train, batch_size=BATCH_SIZE, shuffle=True)
-    dl_eval = GDL(d_eval, batch_size=BATCH_SIZE, shuffle=True)
+        if train_eval_folder:
+            d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
+            mu_sigma = d_train.getMuSigma()
+            d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
+        else:
+            ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
+            d_train,d_eval = split_tr_ev_3to1(ds)
 
-    # load map data if required
-    if include_map:
-        map_path = inpath / '.map' / 'vmap.pth'
-        map_tensors = torch.load(map_path, map_location=DEVICE)
-        print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
-    else:
-        map_tensors = None
+        print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
+        print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
+        # create data loaders
+        dl_train = GDL(d_train, batch_size=combDict.get('batch_size'), shuffle=True)
+        dl_eval = GDL(d_eval, batch_size=combDict.get('batch_size'), shuffle=True)
 
-    model = getModel(modelname,tr_metadata,map_tensors=map_tensors)
-    
-    (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval)
-    plotAccuracies(tot_tracc,tot_vacc,bin_stats, modelname, outpath / pfname, lbnum, cut=cut)
+        # load map data if required
+        if include_map:
+            map_path = inpath / '.map' / 'vmap.pth'
+            map_tensors = torch.load(map_path, map_location=DEVICE)
+            print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
+        else:
+            map_tensors = None
 
-def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut):
+        model = getModel(modelname,tr_metadata,map_tensors=map_tensors,combDict=combDict)
+        
+        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict)
+        plotAccuracies(tot_tracc,tot_vacc,bin_stats, modelname, outpath / pfname, lbnum, cut=cut, combDict=combDict)
+
+def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut,combDict:dict):
     fig, (ax_plot, ax_text) = plt.subplots(
         1, 2,
         figsize=(10,4),
@@ -241,7 +273,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     ax_plot.set_title(f'Validation Accuracy for label #{lbnum}')
     
     # text box with final results
-    params_text = getParams(modelname, bin_stats, tot_vacc, cut=cut)
+    params_text = getParams(modelname, bin_stats, tot_vacc, cut=cut, combDict=combDict)
     ax_text.axis('off')
     ax_text.text(0,0.95, params_text, va='top')
 
@@ -249,23 +281,26 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.savefig(outfile)
     plt.close(fig)
 
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval):
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict):
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
         dl_eval,
-        epochs=EPOCHS,
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
+        epochs=combDict.get('epochs'),
+        lr=combDict.get('lr'),
+        weight_decay=combDict.get('weight_decay'),
         device=DEVICE,
-        verbose=VERBOSE,
+        verbose=verbosity_level>=1,#TODO: implement fine-grained verbosity levels
         progress_logging=PROGRESS_LOGGING,
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
     )
     return (tot_tracc, tot_vacc, bin_stats)
 
-def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None):
+def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None,combDict:dict):
+    BATCH_SIZE = combDict.get('batch_size')
+    EMB_DIM = combDict.get('emb_dim')
+    NUM_POSSIBLE_STATION_TYPES = combDict.get('num_possible_station_types')
     match modelname:
         case 'grugat':
             return GRUGAT(
@@ -294,21 +329,21 @@ def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=Non
                 has_dims=train_metadata.has_dims,
                 has_aggregated_edges=train_metadata.aggregate_edges,
                 frames_num=train_metadata.frames_num,
-                gru_hidden_size=GS_GRU_HIDDEN_SIZE,
-                gru_num_layers=GS_GRU_NUM_LAYERS,
-                fc1dims=GS_FC1_DIMS,
-                sage_hidden_dims=GS_SAGE_HIDDEN_DIMS,
-                fc2dims=GS_FC2_DIMS,
+                gru_hidden_size=combDict.get('gs_gru_hidden_size'),
+                gru_num_layers=combDict.get('gs_gru_num_layers'),
+                fc1dims=combDict.get('gs_fc1_dims'),
+                sage_hidden_dims=combDict.get('gs_sage_hidden_dims'),
+                fc2dims=combDict.get('gs_fc2_dims'),
                 out_dim=len(train_metadata.active_labels),
                 num_st_types=NUM_POSSIBLE_STATION_TYPES,
                 emb_dim=EMB_DIM,
-                dropout=GS_DROPOUT,
-                negative_slope=GS_NEGSLOPE,
-                global_pooling=GS_GPOOLING,
+                dropout=combDict.get('gs_dropout'),
+                negative_slope=combDict.get('gs_neg_slope'),
+                global_pooling=combDict.get('gs_pooling'),
                 map_tensors=map_tensors,
-                mapenc_lane_embdim=GS_MAPENC_LANE_EMBDIM,
-                mapenc_sage_hdims=GS_MAPENC_SAGE_HDIMS,
-                map_attention_topk=GS_MAPATTENTION_TOPK
+                mapenc_lane_embdim=combDict.get('gs_mapenc_lane_embdim'),
+                mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
+                map_attention_topk=combDict.get('gs_map_attention_topk')
             )
         case 'sagegru':
             return SageGru(
