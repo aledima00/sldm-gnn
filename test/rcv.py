@@ -6,21 +6,14 @@ from pathlib import Path
 @click.option('-f', '--fifo-path', 'fifo_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True), required=True, help='Path to the FIFO (named pipe) to read from.')
 def main(fifo_path):
     # apre la fifo in lettura (bloccante finché un writer non si connette)
-    with open(fifo_path, "r") as fifo:
-        while True:
-            line = fifo.readline()
+    fd = os.open(fifo_path,  os.O_RDONLY)
+    while True:
+        data = os.read(fd, 1024)
+        if not data:
+            print("Writer has closed the FIFO. Exiting.")
+            break
 
-            if line == "":
-                # writer ha chiuso la pipe
-                break
-
-            line = line.rstrip("\n")
-
-            # ---- elaborazione ----
-            result = line.upper()   # esempio
-            # ----------------------
-
-            print(f"Received: {line} -> Processed: {result}")
+        print(f"Received: {data}")
 
 if __name__ == "__main__":
     main()
