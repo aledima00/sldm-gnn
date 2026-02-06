@@ -6,13 +6,16 @@ from pathlib import Path
 from collections import deque
 import threading
 
+from src.gbuilder import GraphCreator
+import torch
+
 MAX_JSON_CHUNK_SIZE = 32 * 1024  # 32KB ~ about 300 vehicles in each frame
 
 def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: threading.Condition, terminate_event: threading.Event):
     buffer = ""
     while not terminate_event.is_set():
         chunk = os.read(fd, MAX_JSON_CHUNK_SIZE).decode()
-        print(f"CHUNKSIZE: {len(chunk)}")
+        #print(f"CHUNKSIZE: {len(chunk)}")
         if not chunk:
             print("Writer has closed the FIFO. Exiting.")
             terminate_event.set()
@@ -31,17 +34,32 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                 with condition:
                     pack_queue.append(df)
                     if len(pack_queue) >= pack_size:
-                        condition.notify()  # Notify the consumer that a pack is ready
+                        condition.notify_all()  # Notify the consumer that a pack is ready
 
 def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event):
+    gc = GraphCreator(frames_num=pack_size, m_radius=25, active_labels=None, rscToCenter=True, removeDims=False, heading_enc=True, has_label=False)
+    
+    # =============== instantiate/configure model here ===============
+    # model = Model.loadPTH("model.pth").eval()
+    # ...
+    # =============== end ===============
+
     while not terminate_event.is_set():
         with condition:
             while (len(pack_queue) < pack_size) and not terminate_event.is_set():
                 condition.wait()  # Wait until enough frames are available
             if not terminate_event.is_set():
-                packDf = pd.concat(list(pack_queue)[:pack_size], keys=range(1, pack_size+1), names=['FrameID'])
+                packDf = pd.concat(list(pack_queue)[:pack_size], keys=range(0, pack_size), names=['FrameId']).reset_index(level=0)
         if not terminate_event.is_set():
-            print("packDf:\n", packDf)
+
+            # =============== forward model here ===============
+            gdata = gc(packDf)
+            print(f"new graph:", gdata)
+            with torch.inference_mode():
+                pass #.... # out = model(gdata)
+            #print(f"model output: {out}")
+            # =============== end ===============
+            
             with condition:
                 for _ in range(stride):
                     if pack_queue:

@@ -32,7 +32,7 @@ def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
 
     return x
 
-def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, flatten_time_as_graphs:bool=False)->_GData:
+def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_labels:list[int]=None,gpath:_Path,progress_queue:_Queue,data_src_queue:_Queue, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True, aggregate_edges:bool=True, flatten_time_as_graphs:bool=False):
 
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
@@ -205,6 +205,145 @@ def logworker(*,progress_queue:_Queue,total:int):
         progress.update(val)
     progress.close()
 
+class GraphOnlineCreator:
+    def __init__(self,frames_num:int, m_radius:float, active_labels:list[int]|None, rscToCenter:bool=True, removeDims:bool=False, heading_enc:bool=True,*,has_label:bool)->_GData:
+        self.frames_num = frames_num
+        self.m_radius = m_radius
+        self.active_labels = active_labels if active_labels is not None else [le.value for le in _LBEN]
+        self.rscToCenter = rscToCenter
+        self.removeDims = removeDims
+        self.heading_enc = heading_enc
+        self.has_label = has_label
+
+        # ========================= field indexing =========================
+        self.t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
+        self.t_fnum = len(self.t_fnames)
+        self.t_fnum_final = self.t_fnum + (1 if self.heading_enc else 0)
+        # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag]
+        self.st_fnames = ['width','length','stType']
+        self.st_fnum = len(self.st_fnames)
+        self.stt_fidx = self.t_fnum + self.st_fnum -1  # index of stType in total features
+        self.tot_fnames = self.t_fnames + self.st_fnames
+        self.tot_fnum = self.t_fnum + self.st_fnum
+
+    def finalizePdf(self, pack_df:_pd.DataFrame)->_pd.DataFrame:
+        """ Zero-Padding also here """
+        pack_df['PresenceFlag'] = 1.0
+        pack_df['PresenceFlag'] = pack_df['PresenceFlag'].astype('float16')
+
+        for vid, vg in pack_df.groupby('VehicleId'):
+            vframes = vg['FrameId'].unique()
+            missing_frames = set(range(self.frames_num)) - set(vframes)
+            if len(missing_frames) != 0:
+                for mf in missing_frames:
+                    new_row = _pd.DataFrame([{
+                        'VehicleId': vid,
+                        'X': 0.0,
+                        'Y': 0.0,
+                        'Speed': 0.0,
+                        'Angle': 0.0,
+                        'FrameId': mf,
+                        'PresenceFlag': 0.0,
+                        'width': vg['width'].iloc[0],
+                        'length': vg['length'].iloc[0],
+                        'stType': vg['stType'].iloc[0]
+                    }])
+                    new_row = new_row.astype(pack_df.dtypes.to_dict())
+                    pack_df = _pd.concat([pack_df, new_row], ignore_index=True)
+
+        # sort by FrameId, VehicleId for consistent ordering
+        pack_df = pack_df.sort_values(['FrameId', 'VehicleId']).reset_index(drop=True)
+        return pack_df
+
+
+    def __call__(self, full_pack_df:_pd.DataFrame, mlb:int|None=None)->_GData:
+        if self.has_label and mlb is None:
+            raise ValueError("GraphOnlineCreator is configured to expect labels, but mlb argument is None")
+
+        # ========================= nodes =========================
+
+        gdata_dict = dict()
+        pack_df = self.finalizePdf(full_pack_df).copy().sort_values(['VehicleId','FrameId'])
+        raw_feats = pack_df[self.tot_fnames].to_numpy().reshape(-1, self.frames_num, self.tot_fnum)  # num_vehicles x num_frames x num_features
+
+        x = raw_feats[:,:,:self.t_fnum] # temporal features
+        # set angles to rad
+        x[:,:,3] = _np.deg2rad( x[:,:,3] )
+
+        xdims = raw_feats[:,0:1,self.t_fnum:self.stt_fidx] # static features (same for all frames)
+        xsttype = raw_feats[:,0,self.stt_fidx]
+
+        if self.rscToCenter:
+            x = rescaleToCenter(x, xdims)
+        x  = _tch.tensor(x, dtype=_tch.float, device='cpu')
+        xsttype = _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
+
+        if not self.removeDims:
+            # remove width and length (first 2 columns) from static features
+            xdims = xdims.reshape(xdims.shape[0], -1)  # num_vehicles x num_static_features
+            xdims = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
+        
+        # ========================= edge construction =========================
+
+        # edge index construction based on distance of trajectories
+        ## min distance used for threshold
+        ## inverse of avg distance used for edge values
+        edge_index_list = []
+        edge_attr_list = []
+        num_vehicles = x.shape[0]
+        for i in range(num_vehicles):
+            xi = x[i,:,:2]  # X,Y - (fr, 2)
+            pi = x[i,:,4]  # PresenceFlag - (fr,)
+            for j in range(num_vehicles):
+                if i != j:
+                    xj = x[j,:,:2]  # X,Y - (fr, 2)
+                    pj = x[j,:,4]  # PresenceFlag - (fr,)
+
+                    # compute distances
+                    dists:_np.ndarray = _np.linalg.norm(xi - xj, axis=1)  # (fr,)
+                    # consider only frames where both vehicles are present
+                    presence_mask = (pi > 0.5) & (pj > 0.5)
+                    dists = dists[presence_mask]
+                    if (not dists.size == 0) and dists.min() <= self.m_radius:
+                        min_dist = dists.min()
+                        max_dist = dists.max()
+                        mean_dist = dists.mean()
+                        msq_dist = (dists ** 2).mean()
+
+                        edge_index_list.append([i,j])
+                        # use all attributes for distance statistics
+                        edge_attr_list.append([min_dist, max_dist, mean_dist, msq_dist])
+
+        gdata_dict['edge_index'] = _tch.tensor(edge_index_list, dtype=_tch.long).t().contiguous() if len(edge_index_list) > 0 else _tch.empty((2,0), dtype=_tch.long)
+        gdata_dict['edge_attr'] = _tch.tensor(edge_attr_list, dtype=_tch.float) if len(edge_attr_list) > 0 else _tch.empty((0,4), dtype=_tch.float)
+
+
+        # ========================= finalize features =========================
+
+        if self.heading_enc:
+            # replace angle with 2 features of sin+cos heading encoding
+            h = x[:,:,3:4]
+            hsin = _tch.sin(h)  # (num_vehicles, num_frames, 1)
+            hcos = _tch.cos(h)  # (num_vehicles, num_frames, 1)
+            x = _tch.cat([x[:,:,:3], hsin, hcos, x[:,:,4:]], dim=2)
+
+        gdata_dict['x'] = x
+        gdata_dict['xsttype'] = xsttype
+        if not self.removeDims:
+            gdata_dict['xdims'] = xdims
+        
+        if mlb is not None:
+            # labels are stored as bitmask in an integer
+            y = _tch.zeros((len(self.active_labels),), dtype=_tch.float)
+            for i,c in enumerate(self.active_labels):
+                if mlb & (1 << c):
+                    y[i] = 1.0 
+            # return graph data object
+            gdata_dict['y'] = y
+
+        gdata = _GData(**gdata_dict)
+        return gdata        
+        
 class MapBuilder:
     filepath: _Path
     def __init__(self, filepath:_Path, lat_conn_max_angle_deg:float, lat_conn_proximity_threshold:float):
