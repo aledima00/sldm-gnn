@@ -6,7 +6,7 @@ from pathlib import Path
 from collections import deque
 import threading
 
-from src.gbuilder import GraphCreator
+from src.gbuilder import GraphOnlineCreator
 import torch
 
 MAX_JSON_CHUNK_SIZE = 32 * 1024  # 32KB ~ about 300 vehicles in each frame
@@ -37,7 +37,7 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                         condition.notify_all()  # Notify the consumer that a pack is ready
 
 def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event):
-    gc = GraphCreator(frames_num=pack_size, m_radius=25, active_labels=None, rscToCenter=True, removeDims=False, heading_enc=True, has_label=False)
+    gc = GraphOnlineCreator(frames_num=pack_size, m_radius=25, active_labels=None, rscToCenter=True, removeDims=False, heading_enc=True, has_label=False)
     
     # =============== instantiate/configure model here ===============
     # model = Model.loadPTH("model.pth").eval()
