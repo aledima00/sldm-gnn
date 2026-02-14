@@ -2,3 +2,5 @@
 input
 __pycache__
 out/
+utils/
+.plots
