@@ -84,16 +84,11 @@ class MetaData:
     n_edge_features:int
     frames_num:int
     m_radius:float
-    vpos_rescaled_center:bool
-    has_dims:bool
-    heading_encoded:bool
-    aggregate_edges:bool
-    flatten_time_as_graphs: bool
     active_labels:list[int]
 
     @property
     def n_node_temporal_features(self)->int:
-        return (3 + (0 if self.flatten_time_as_graphs else 1) + (2 if self.heading_encoded else 1))
+        return (3 + 1 + 2)
 
     def getNegOverPosRatio(self) ->float:
         if self.n_positive == 0:
@@ -123,18 +118,11 @@ class MetaData:
                 msk[2] = True
             case 'heading':
                 msk[3] = True
-                if self.heading_encoded:
-                    msk[4] = True
+                msk[4] = True
             case 'hsin':
-                if self.heading_encoded:
-                    msk[3] = True
-                else:
-                    raise ValueError("Heading is not encoded with sin/cos, cannot get 'hsin' mask")
+                msk[3] = True
             case 'hcos':
-                if self.heading_encoded:
-                    msk[4] = True
-                else:
-                    raise ValueError("Heading is not encoded with sin/cos, cannot get 'hcos' mask")
+                msk[4] = True
             case _:
                 raise ValueError(f"Unknown selector '{selector}' for getFeaturesMask")
         #TODO:CHECK check this implementation

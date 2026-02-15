@@ -12,7 +12,6 @@ class AddNoise:
         # std assumed nominal std if prop_to_speed is False or max std if prop_to_speed is True
         self.mask = metadata.getFeaturesMask(target)
         self.speedMask = metadata.getFeaturesMask('speed')
-        self.flattened_time_as_graphs = metadata.flatten_time_as_graphs
         self.prop_to_speed = prop_to_speed        
 
     def getStd(self,*,speed=None):
@@ -26,39 +25,29 @@ class AddNoise:
     def __call__(self, data:_GData)->_GData:
         # TODO:CHECK this implementation
         if self.prop_to_speed:
-            speed = data.x[:,self.speedMask] if self.flattened_time_as_graphs else data.x[:,:,self.speedMask]
+            speed = data.x[:,:,self.speedMask]
             std = self.getStd(speed=speed)
         else:
             std = self.getStd()
 
         
-        if self.flattened_time_as_graphs:
-            data.x[:,self.mask] += _tch.randn_like(data.x[:,self.mask],device=data.x.device) * std
-        else:
-            data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * std
+        data.x[:,:,self.mask] += _tch.randn_like(data.x[:,:,self.mask],device=data.x.device) * std
         return data
     
 class RemoveDimsFeatures:
     def __init__(self,metadata:_MD):
-        self.hasDims = metadata.has_dims
-        
+        pass
     def __call__(self, data:_GData)->_GData:
-        if self.hasDims:
-            # remove width and length from static features (first 2 features)
+        if hasattr(data, 'xdims'):
             del data.xdims
-            # TODO:CHECK: is this necessary or should i just ignore it, avoiding in the model the use of data.xdims directly?
         return data
     
 class RandomRotate:
     def __init__(self, metadata:_MD):
         self.num_frames = metadata.frames_num
         self.posMask = metadata.getFeaturesMask('pos')
-        if metadata.heading_encoded:
-            self.hSinMask = metadata.getFeaturesMask('hsin')
-            self.hCosMask = metadata.getFeaturesMask('hcos')
-        else:
-            self.hMask = metadata.getFeaturesMask('heading')
-        self.headingEncoded = metadata.heading_encoded
+        self.hSinMask = metadata.getFeaturesMask('hsin')
+        self.hCosMask = metadata.getFeaturesMask('hcos')
     def __call__(self, data:_GData)->_GData:
         # random rotation angle
         # TODO:CHECK this implementation
@@ -79,14 +68,10 @@ class RandomRotate:
         data.x[:,:,self.posMask] = positions
 
         # adjust headings
-        if self.headingEncoded:
-            hsin = data.x[:,:,self.hSinMask]
-            hcos = data.x[:,:,self.hCosMask]
-            data.x[:,:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
-            data.x[:,:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
-        else:
-            headings = data.x[:,:,self.hMask]
-            data.x[:,:,self.hMask] = (headings + theta) % (2 * _tch.pi)
+        hsin = data.x[:,:,self.hSinMask]
+        hcos = data.x[:,:,self.hCosMask]
+        data.x[:,:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
+        data.x[:,:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
         
 
         return data

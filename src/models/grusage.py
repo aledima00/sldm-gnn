@@ -9,16 +9,12 @@ from .map.mapattention import MapSpatialAttention as _MapSpatialAttention
 from .map.mapInputNorm import MapZscoreNorm as _MapZscoreNorm
 
 class GruSage(_nn.Module):
-    def __init__(self, dynamic_features_num:int, has_dims:bool, has_aggregated_edges:bool, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5):
+    def __init__(self, dynamic_features_num:int, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5):
         super().__init__()
 
         #TODO validate inputs
         assert len(sage_hidden_dims) >= 1, "sage_hidden_dims must contain at least one element"
         # ...
-
-        #TODO Implement additional edge-wise GRU to support non-aggregated edges case
-        if not has_aggregated_edges:
-            raise NotImplementedError("Currently only has_aggregated_edges=True is supported")
 
         # 1 - embedding for station types
         self.st_emb = _nn.Embedding(num_st_types, emb_dim)
@@ -32,8 +28,7 @@ class GruSage(_nn.Module):
         )
 
         # 3. concat all input features
-        last_step_dims = gru_hidden_size + (2 if has_dims else 0) + emb_dim
-        self.hasdims = has_dims
+        last_step_dims = gru_hidden_size + 2 + emb_dim
 
         # 4 - fully connected layers before GraphSAGE
         ldims1 = [last_step_dims] + fc1dims
@@ -116,11 +111,8 @@ class GruSage(_nn.Module):
         x = hlast[-1,:,:] # take last hidden state
 
         # 3 - concat all input features
-        if self.hasdims:
-            xdims = data.xdims
-            x = _torch.cat([x, xdims,st_embedded], dim=1)
-        else:
-            x = _torch.cat([x, st_embedded], dim=1)
+        xdims = data.xdims
+        x = _torch.cat([x, xdims,st_embedded], dim=1)
 
         # 4 - fc layers before GraphSAGE
         for fc in self.fc1s:

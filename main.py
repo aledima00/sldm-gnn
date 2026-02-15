@@ -188,8 +188,6 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
 
         model = GruSage(
             dynamic_features_num=tr_metadata.n_node_temporal_features,
-            has_dims=tr_metadata.has_dims,
-            has_aggregated_edges=tr_metadata.aggregate_edges,
             frames_num=tr_metadata.frames_num,
             gru_hidden_size=combDict.get('gs_gru_hidden_size'),
             gru_num_layers=combDict.get('gs_gru_num_layers'),
