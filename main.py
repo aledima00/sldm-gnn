@@ -19,7 +19,6 @@ import src.transforms as TFs
 from src.utils import train_model, split_tr_ev_3to1, MetaData, ParamSweepContext
 colorama.init(autoreset=True)
 
-ModelOptsType = Lit['grusage','sagegru','grugat', 'grufc']
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 
 
@@ -56,35 +55,6 @@ GRUSAGE_PARAMS_DICT = {
 }
 
 
-# ------------------- SAGEGRU parameters -------------------
-SG_SAGE_HIDDEN_DIMS = [32, 32]
-SG_FC1_DIMS = [64]
-SG_GRU_HIDDEN_SIZE = 64
-SG_GRU_NUM_LAYERS=1
-SG_FC2_DIMS = [32,16]
-SG_DROPOUT = 0.1
-SG_NEGSLOPE = 0.01
-
-# ------------------- GRUGAT parameters -------------------
-GG_GRU_HIDDEN_SIZE = 48
-GG_GRU_NUM_LAYERS = 1
-GG_FCDIMS1 = [48]
-GG_GAT_HIDDEN_DIMS = [48, 48]
-GG_GAT_NHEADS = 2
-GG_GAT_HEADS_CONCAT = True
-GG_FCDIMS2 = [16]
-GG_DROPOUT = 0.1
-GG_NEGSLOPE = None
-GG_GPOOLING = 'double'
-
-# ------------------- GRUFC parameters -------------------
-GF_GRU_HIDDEN_SIZE = 48
-GF_GRU_NUM_LAYERS = 1
-GF_FCDIMS = [48, 16]
-GF_DROPOUT = 0.1
-GF_NEGSLOPE = None
-GF_GPOOLING = 'double'
-
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -96,44 +66,33 @@ def stripnum(match:re.Match)->str:
     else:
         return f"E{sign}{num}"
 
-def getPlotFname(model:ModelOptsType, outdir:Path,mapIncluded:bool)->str:
+def getPlotFname(outdir:Path,mapIncluded:bool)->str:
     #TODO: launch checks at the beginning of the main script
-    fnamebase = f"{model.upper()}_{'MAP_' if mapIncluded else ''}RUN_"
+    fnamebase = f"GRUSAGE_{'MAP_' if mapIncluded else ''}RUN_"
     for i in range(1,1001):
         fname = f"{fnamebase}{i:03d}.png"
         if not (outdir / fname).exists():
             return fname
         
-def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
+def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
     """ Parameters as string for plot text box """
-    #TODO: improve formatting
 
     EMB_DIM = combDict.get('emb_dim')
     EPOCHS = combDict.get('epochs')
     BATCH_SIZE = combDict.get('batch_size')
     LR = combDict.get('lr')
     WEIGHT_DECAY = combDict.get('weight_decay')
-    match model:
-        case 'grusage':
-            GS_GRU_HS = combDict.get('gs_gru_hidden_size')
-            GS_GRU_NL = combDict.get('gs_gru_num_layers')
-            GS_FC1_DIMS = combDict.get('gs_fc1_dims')
-            GS_SAGE_HIDDEN_DIMS = combDict.get('gs_sage_hidden_dims')
-            GS_FC2_DIMS = combDict.get('gs_fc2_dims')
-            GS_DROPOUT = combDict.get('gs_dropout')
-            GS_NEGSLOPE = combDict.get('gs_neg_slope')
-            GS_MELD = combDict.get('gs_mapenc_lane_embdim')
-            GS_MESD = combDict.get('gs_mapenc_sage_hdims')
-            GS_MAPATTENTION_TOPK = combDict.get('gs_map_attention_topk')
-            params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HS}, num layers = {GS_GRU_NL}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MELD}, Sage HDims = {GS_MESD}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
-        case 'sagegru':
-            params = f"SAGEGRU model parameters:\n - Embedding size for station types: {EMB_DIM}\n - SAGE hidden dims: {SG_SAGE_HIDDEN_DIMS}\n - FC1 dims: {SG_FC1_DIMS}\n - GRU hidden size: {SG_GRU_HIDDEN_SIZE}\n - GRU num layers: {SG_GRU_NUM_LAYERS}\n - FC2 dims: {SG_FC2_DIMS}\n - Dropout: {SG_DROPOUT}\n - ReLU Neg. slope: {SG_NEGSLOPE}\n"
-        case 'grugat':
-            params = f"GRUGAT model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU hidden size: {GG_GRU_HIDDEN_SIZE}\n - GRU num layers: {GG_GRU_NUM_LAYERS}\n - FC1 dims: {GG_FCDIMS1}\n - GAT hidden dims: {GG_GAT_HIDDEN_DIMS}\n - GAT nheads: {GG_GAT_NHEADS}\n - FC2 dims: {GG_FCDIMS2}\n - Dropout: {GG_DROPOUT}\n - ReLU Neg. slope: {GG_NEGSLOPE}\n"
-        case 'grufc':
-            params = f"GRUFC model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU hidden size: {GF_GRU_HIDDEN_SIZE}\n - GRU num layers: {GF_GRU_NUM_LAYERS}\n - FC dims: {GF_FCDIMS}\n - Dropout: {GF_DROPOUT}\n - ReLU Neg. slope: {GF_NEGSLOPE}\n"
-        case _:
-            raise ValueError(f"Unknown model type: {model}")
+    GS_GRU_HS = combDict.get('gs_gru_hidden_size')
+    GS_GRU_NL = combDict.get('gs_gru_num_layers')
+    GS_FC1_DIMS = combDict.get('gs_fc1_dims')
+    GS_SAGE_HIDDEN_DIMS = combDict.get('gs_sage_hidden_dims')
+    GS_FC2_DIMS = combDict.get('gs_fc2_dims')
+    GS_DROPOUT = combDict.get('gs_dropout')
+    GS_NEGSLOPE = combDict.get('gs_neg_slope')
+    GS_MELD = combDict.get('gs_mapenc_lane_embdim')
+    GS_MESD = combDict.get('gs_mapenc_sage_hdims')
+    GS_MAPATTENTION_TOPK = combDict.get('gs_map_attention_topk')
+    params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HS}, num layers = {GS_GRU_NL}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MELD}, Sage HDims = {GS_MESD}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
 
     params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
@@ -167,12 +126,10 @@ def getParams(model:ModelOptsType, bin_stats:tuple|None,  tot_vacc:np.ndarray, c
 @click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.argument('outdir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
 @click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
-@click.option('-m', '--model', 'modelname', type=click.Choice(ModelOptsType.__args__, case_sensitive=False), required=True, prompt='Choose model', help='Model to use')
-@click.option('--train-eval-folder', is_flag=True, default=False, help='If set, looks for train/eval subfolders in inputdir')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
 @click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
 @click.option('-v', '--verbose','verbosity_level', count=True, help='Verbosity level: -v for verbose, -vv for more verbose, -vvv for debug.')
-def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:bool, cut:int|None, include_map:bool, verbosity_level:int):
+def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, verbosity_level:int):
     psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
     tot_cmb = len(psc)
     print(f"TOT_COMBINATIONS={tot_cmb}")
@@ -188,18 +145,12 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
         outpath.mkdir(parents=True, exist_ok=True)
 
         # string with all params in exp format
-        pfname = getPlotFname(modelname, outpath,mapIncluded=include_map)
+        pfname = getPlotFname(outpath,mapIncluded=include_map)
 
-        if train_eval_folder:
-            tr_gpath = inpath / 'train' / '.graphs'
-            ev_gpath = inpath / 'eval' / '.graphs'
-            tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
-            ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
-        else:
-            gpath = inpath / '.graphs'
-            metadata = MetaData.loadJson(gpath / 'metadata.json')
-            tr_metadata = metadata
-            ev_metadata = metadata
+        tr_gpath = inpath / 'train' / '.graphs'
+        ev_gpath = inpath / 'eval' / '.graphs'
+        tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
+        ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
 
         transform = []
         if combDict.get('tf_rotate'):
@@ -217,13 +168,9 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
         
         print(f" - Using device: {DEVICE}")
 
-        if train_eval_folder:
-            d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
-            mu_sigma = d_train.getMuSigma()
-            d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
-        else:
-            ds = MapGraph(gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=metadata)
-            d_train,d_eval = split_tr_ev_3to1(ds)
+        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
+        mu_sigma = d_train.getMuSigma()
+        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
 
         print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
         print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
@@ -239,12 +186,32 @@ def main(inputdir:Path,outdir:Path,lbnum:int, modelname:str, train_eval_folder:b
         else:
             map_tensors = None
 
-        model = getModel(modelname,tr_metadata,map_tensors=map_tensors,combDict=combDict)
+        model = GruSage(
+            dynamic_features_num=tr_metadata.n_node_temporal_features,
+            has_dims=tr_metadata.has_dims,
+            has_aggregated_edges=tr_metadata.aggregate_edges,
+            frames_num=tr_metadata.frames_num,
+            gru_hidden_size=combDict.get('gs_gru_hidden_size'),
+            gru_num_layers=combDict.get('gs_gru_num_layers'),
+            fc1dims=combDict.get('gs_fc1_dims'),
+            sage_hidden_dims=combDict.get('gs_sage_hidden_dims'),
+            fc2dims=combDict.get('gs_fc2_dims'),
+            out_dim=len(tr_metadata.active_labels),
+            num_st_types=combDict.get('num_possible_station_types'),
+            emb_dim=combDict.get('emb_dim'),
+            dropout=combDict.get('gs_dropout'),
+            negative_slope=combDict.get('gs_neg_slope'),
+            global_pooling=combDict.get('gs_pooling'),
+            map_tensors=map_tensors,
+            mapenc_lane_embdim=combDict.get('gs_mapenc_lane_embdim'),
+            mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
+            map_attention_topk=combDict.get('gs_map_attention_topk')
+        )
         
         (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict)
-        plotAccuracies(tot_tracc,tot_vacc,bin_stats, modelname, outpath / pfname, lbnum, cut=cut, combDict=combDict)
+        plotAccuracies(tot_tracc,tot_vacc,bin_stats, outpath / pfname, lbnum, cut=cut, combDict=combDict)
 
-def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, modelname:ModelOptsType, outfile:Path,lbnum:int,*,cut,combDict:dict):
+def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
     fig, (ax_plot, ax_text) = plt.subplots(
         1, 2,
         figsize=(10,4),
@@ -273,7 +240,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     ax_plot.set_title(f'Validation Accuracy for label #{lbnum}')
     
     # text box with final results
-    params_text = getParams(modelname, bin_stats, tot_vacc, cut=cut, combDict=combDict)
+    params_text = getParams(bin_stats, tot_vacc, cut=cut, combDict=combDict)
     ax_text.axis('off')
     ax_text.text(0,0.95, params_text, va='top')
 
@@ -296,90 +263,6 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:i
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
     )
     return (tot_tracc, tot_vacc, bin_stats)
-
-def getModel(modelname:ModelOptsType,train_metadata:MetaData, *, map_tensors=None,combDict:dict):
-    BATCH_SIZE = combDict.get('batch_size')
-    EMB_DIM = combDict.get('emb_dim')
-    NUM_POSSIBLE_STATION_TYPES = combDict.get('num_possible_station_types')
-    match modelname:
-        case 'grugat':
-            return GRUGAT(
-                dynamic_features_num=train_metadata.n_node_temporal_features,
-                has_dims=train_metadata.has_dims,
-                has_aggregated_edges=train_metadata.aggregate_edges,
-                frames_num=train_metadata.frames_num,
-                emb_dim=EMB_DIM,
-                gru_hidden_size=GG_GRU_HIDDEN_SIZE,
-                gru_num_layers=GG_GRU_NUM_LAYERS,
-                fc1dims=GG_FCDIMS1,
-                gat_edge_fnum=None,
-                gat_inner_dims=GG_GAT_HIDDEN_DIMS,
-                gat_nheads = GG_GAT_NHEADS,
-                fc2dims=GG_FCDIMS2,
-                out_dim=len(train_metadata.active_labels),
-                num_st_types=NUM_POSSIBLE_STATION_TYPES,
-                dropout=GG_DROPOUT,
-                negative_slope=GG_NEGSLOPE,
-                gat_concat=GG_GAT_HEADS_CONCAT,
-                global_pooling=GG_GPOOLING
-            )
-        case 'grusage':
-            return GruSage(
-                dynamic_features_num=train_metadata.n_node_temporal_features,
-                has_dims=train_metadata.has_dims,
-                has_aggregated_edges=train_metadata.aggregate_edges,
-                frames_num=train_metadata.frames_num,
-                gru_hidden_size=combDict.get('gs_gru_hidden_size'),
-                gru_num_layers=combDict.get('gs_gru_num_layers'),
-                fc1dims=combDict.get('gs_fc1_dims'),
-                sage_hidden_dims=combDict.get('gs_sage_hidden_dims'),
-                fc2dims=combDict.get('gs_fc2_dims'),
-                out_dim=len(train_metadata.active_labels),
-                num_st_types=NUM_POSSIBLE_STATION_TYPES,
-                emb_dim=EMB_DIM,
-                dropout=combDict.get('gs_dropout'),
-                negative_slope=combDict.get('gs_neg_slope'),
-                global_pooling=combDict.get('gs_pooling'),
-                map_tensors=map_tensors,
-                mapenc_lane_embdim=combDict.get('gs_mapenc_lane_embdim'),
-                mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
-                map_attention_topk=combDict.get('gs_map_attention_topk')
-            )
-        case 'sagegru':
-            return SageGru(
-                batch_size=BATCH_SIZE,
-                dynamic_features_num=train_metadata.n_node_temporal_features,
-                has_dims=train_metadata.has_dims,
-                frames_num=train_metadata.frames_num,
-                sage_hidden_dims=SG_SAGE_HIDDEN_DIMS,
-                fc1dims=SG_FC1_DIMS,
-                gru_hidden_size=SG_GRU_HIDDEN_SIZE,
-                gru_num_layers=SG_GRU_NUM_LAYERS,
-                fc2dims=SG_FC2_DIMS,
-                out_dim=len(train_metadata.active_labels),
-                num_st_types=NUM_POSSIBLE_STATION_TYPES,
-                emb_dim=EMB_DIM,
-                dropout=SG_DROPOUT,
-                negative_slope=SG_NEGSLOPE,
-                global_pooling='double'
-            )
-        case 'grufc':
-            return GruFC(
-                dynamic_features_num=train_metadata.n_node_temporal_features,
-                has_dims=train_metadata.has_dims,
-                frames_num=train_metadata.frames_num,
-                gru_hidden_size=GF_GRU_HIDDEN_SIZE,
-                gru_num_layers=GF_GRU_NUM_LAYERS,
-                fc_dims=GF_FCDIMS,
-                out_dim=len(train_metadata.active_labels),
-                num_st_types=NUM_POSSIBLE_STATION_TYPES,
-                emb_dim=EMB_DIM,
-                dropout=GF_DROPOUT,
-                negative_slope=GF_NEGSLOPE,
-                global_pooling=GF_GPOOLING
-            )
-        case _:
-            raise ValueError(f"Unknown model name: {modelname}")
 
 if __name__ == '__main__':
     main()
