@@ -86,7 +86,6 @@ class MapGraph(_GDataset):
             graph.x[:,:,:-1] = (graph.x[:,:,:-1] - self.mu["x"]) / self.sigma["x"]
             graph.xdims = (graph.xdims - self.mu["xdims"]) / self.sigma["xdims"]
 
-        #TODO - add flattening option here in case is needed, only as postproc
         return graph
     
     @property

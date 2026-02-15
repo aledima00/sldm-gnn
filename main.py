@@ -5,18 +5,14 @@ from pathlib import Path
 import colorama
 from colorama import Fore, Style, Back
 import numpy as np
-from typing import Literal as Lit
 from matplotlib import pyplot as plt
 import click
 import re
 
 from src.dataset import MapGraph
 from src.models.grusage import GruSage
-from src.models.sagegru import SageGru
-from src.models.grugat import GRUGAT
-from src.models.grufc import GruFC
 import src.transforms as TFs
-from src.utils import train_model, split_tr_ev_3to1, MetaData, ParamSweepContext
+from src.utils import train_model, MetaData, ParamSweepContext
 colorama.init(autoreset=True)
 
 PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'

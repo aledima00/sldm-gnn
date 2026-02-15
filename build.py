@@ -2,7 +2,7 @@ import click
 from src.gbuilder import GraphsBuilder, MapBuilder
 from pathlib import Path
 
-DEF_FNUM = 20
+DEF_FNUM = 100
 DEF_RADIUS = 30.0
 DEF_MAP_LAT_CONN_MAX_ANGLE = 30.0
 DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD = 1.0

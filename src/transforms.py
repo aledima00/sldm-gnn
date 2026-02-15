@@ -4,7 +4,6 @@ from torch_geometric.data import Data as _GData
 from .utils import MetaData as _MD, FmaskType as _FMType
 
 # define useful transformations for dataset
-#TODO: implement masks that scales in dimensions, in order to use [:,mask] indexing also when [:, :, mask] would be needed
 
 class AddNoise:
     def __init__(self,target:_FMType, std:float, metadata:_MD, prop_to_speed:bool=False):
@@ -82,7 +81,6 @@ class CutFrames:
 
     def __call__(self, data:_GData)->_GData:
         # assume data.x shape is [num_nodes, num_frames, num_features]
-        # TODO - ADD IMPLEMENTATION FOR FLATTENED TIME
         data.x = data.x[:, :self.cut, :]
         return data
         

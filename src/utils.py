@@ -1,7 +1,5 @@
 import torch as _tch
-from torch.utils.data import random_split as _rsplit
 from torch_geometric.loader import DataLoader as _GDL
-from torch_geometric.data import Dataset as _GDataset
 from typing import Literal as _Lit, Iterable as _Iterable, Any as _Any, List as _List, Tuple as _Tuple, Callable as _Callable, TypeAlias as _TA
 from colorama import Fore as _Fore, Back as _Back, Style as _Style
 from tqdm.auto import tqdm as _tqdm
@@ -104,7 +102,6 @@ class MetaData:
         return MetaData(**mddict)
     
     def getFeaturesMask(self,selector:FmaskType)->_tch.Tensor:
-        #TODO: implement masks that scales in dimensions, in order to use [:,mask] indexing also when [:, :, mask] would be needed
         msk = _tch.full((self.n_node_temporal_features,),False,dtype=_tch.bool)
         match selector:
             case 'x':
@@ -125,15 +122,7 @@ class MetaData:
                 msk[4] = True
             case _:
                 raise ValueError(f"Unknown selector '{selector}' for getFeaturesMask")
-        #TODO:CHECK check this implementation
         return msk
-
-def split_tr_ev_3to1(dataset:_GDataset)->tuple[_GDataset,_GDataset]:
-    total_len = len(dataset)
-    train_len = (total_len * 3) // 4
-    val_len = total_len - train_len
-    train_ds, val_ds = _rsplit(dataset, [train_len, val_len])
-    return train_ds, val_ds
 
 def getLbName(label_idx:int,active_labels)->str:
     try:
@@ -176,13 +165,12 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
                     y = batch.y.float().view(batch.num_graphs, act_labels_num)
                     train_loss = criterion(logits, y)
                     train_loss.backward()
-                    # TODO remove dbg print
                     if i==len(train_loader)-1:
                         # model.printGradInfo()
                         # print num of positive and negative logits in last batch
                         pos_logits = (logits >= 0).long().sum().item()
                         neg_logits = (logits < 0).long().sum().item()
-                        tprint(f"Last Batch Logits: Pos={pos_logits}, Neg={neg_logits}")
+                        #tprint(f"Last Batch Logits: Pos={pos_logits}, Neg={neg_logits}")
                     train_total_loss += train_loss.item() * batch.num_graphs
                     optimizer.step()
 
@@ -276,11 +264,3 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
         tot_vacc[:,epoch] = tot_val_accuracy
 
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc), ((bin_cm_flat_values, bin_rocauc_values) if act_labels_num==1 else None)
-
-def flattenTimeAsFeatures(data):
-    """
-    Flattens temporal dimension, bringing samples from shape [vehicles/nodes/batches, frames, features] to [vehicles/nodes/batches, frames*features]
-    """ 
-    #TODO - try using this function
-    data.x = data.x.flatten(start_dim=1)
-    return data
