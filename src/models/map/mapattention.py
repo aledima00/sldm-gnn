@@ -7,7 +7,7 @@ class MapSpatialAttention(_nn.Module):
         super().__init__()
         # map_centroids: [NUM_TOTAL_SEGMENTS, 2] -> coordinates of segment centroids
         # map_embeddings: [NUM_TOTAL_SEGMENTS, EMBED_DIM] -> lane embeddings (after mapGNN)
-        self.register_buffer('map_centroids', map_centroids)
+        self.register_buffer('map_centroids', map_centroids, persistent=True) # persistent allow to save in state_dict but not update during training
         self.k = k_neighbors # pick knn segments for attention
         
         # attention scores based on euclidian distance rather than direct transformer dot-product, as we want to focus on spatial neighborhood
