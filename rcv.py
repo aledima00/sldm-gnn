@@ -6,6 +6,7 @@ from pathlib import Path
 from collections import deque
 import threading
 
+from src.models.grusage import GruSage
 from src.gbuilder import GraphOnlineCreator
 import torch
 
@@ -36,11 +37,12 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                     if len(pack_queue) >= pack_size:
                         condition.notify_all()  # Notify the consumer that a pack is ready
 
-def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event):
+def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, weights_path: Path):
     gc = GraphOnlineCreator(frames_num=pack_size, m_radius=25, active_labels=None, has_label=False)
     
     # =============== instantiate/configure model here ===============
     # model = Model.loadPTH("model.pth").eval()
+    model = GruSage.from_snapshot(weights_path.resolve()).cuda().eval()
     # ...
     # =============== end ===============
 
@@ -53,11 +55,11 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
         if not terminate_event.is_set():
 
             # =============== forward model here ===============
-            gdata = gc(packDf)
+            gdata = gc(packDf).cuda()
             print(f"new graph:", gdata)
             with torch.inference_mode():
-                pass #.... # out = model(gdata)
-            #print(f"model output: {out}")
+                out = model(gdata)
+            print(f"model output: {out}")
             # =============== end ===============
             
             with condition:
@@ -69,7 +71,8 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
 @click.option('-f', '--fifo-path', 'fifo_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path), required=True, help='Path to the FIFO (named pipe) to read from.')
 @click.option('-p', '--pack-size', 'pack_size', type=int, required=True, help='Number of frames to pack together before processing.')
 @click.option('-s', '--stride', 'stride', type=int, default=1, help='Number of frames to stride after each pack processing.')
-def main(fifo_path: Path, pack_size: int, stride: int):
+@click.option('-w','--weights-path', 'weights_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path), required=True, help='Path to the model weights file (.pth).')
+def main(fifo_path: Path, pack_size: int, stride: int, weights_path: Path):
     # apre la fifo in lettura (bloccante finché un writer non si connette)
     fd = os.open(fifo_path.resolve(),  os.O_RDONLY)
     pack_queue = deque()
@@ -79,7 +82,7 @@ def main(fifo_path: Path, pack_size: int, stride: int):
 
     try:
         t1 = threading.Thread(target=pipeout_producer, args=(fd, pack_queue, pack_size, condition, terminate_event))
-        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event))
+        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, weights_path))
         t1.start()
         t2.start()
         t1.join()

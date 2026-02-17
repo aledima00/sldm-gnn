@@ -12,6 +12,7 @@ from itertools import product as _iproduct
 
 from .tprint import TabPrint as _TabPrint
 from .labels import LabelsEnum as _LE
+from .models.grusage import GruSage as _Grusage
 
 Progress_logging_options = _Lit['clilog', 'tqdm', 'none']
 
@@ -130,7 +131,7 @@ def getLbName(label_idx:int,active_labels)->str:
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None):
+def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     posw = _tch.tensor(neg_over_pos_ratio, device=device)
@@ -238,7 +239,7 @@ def train_model(model:_tch.nn.Module, train_loader:_GDL, eval_loader:_GDL, epoch
 
             if tot_val_accuracy > best_vacc and best_state_path is not None:
                 best_vacc = tot_val_accuracy
-                _tch.save(model.state_dict(), best_state_path.resolve())
+                model.save_snapshot(best_state_path.resolve())
                 tprint(f"{_Fore.GREEN}{_Style.BRIGHT}New best model saved with Validation Accuracy: {best_vacc:.4f}{_Style.RESET_ALL}")
 
             per_label_val_acc = (tot_correct.sum(dim=0).cpu().float().numpy() / tot_mlb).tolist()

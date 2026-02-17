@@ -2,6 +2,7 @@ import torch as _torch
 import torch.nn as _nn
 from torch_geometric.nn import global_mean_pool as _gmean_pool, global_max_pool as _gmax_pool
 from typing import Literal as _Lit
+from pathlib import Path as _Path
 
 from .blocks.sageblock import SageBlock as _SageBlock
 from .map.mapencoder import MapEncoder as _MapEncoder
@@ -9,8 +10,35 @@ from .map.mapattention import MapSpatialAttention as _MapSpatialAttention
 from .map.mapInputNorm import MapZscoreNorm as _MapZscoreNorm
 
 class GruSage(_nn.Module):
-    def __init__(self, dynamic_features_num:int, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5):
+    def __init__(self, dynamic_features_num:int, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_included:bool=True,*, map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5, map_embeddings:_torch.Tensor|None=None):
         super().__init__()
+        # in order to initialize properly, if map_included is True, either map_tensors or map_embeddings must be provided, and map_attention_topk is required in any case
+        if map_included:
+            assert (map_tensors is not None) or (map_embeddings is not None), "If map_included is True, either map_tensors or map_embeddings must be provided"
+            assert map_attention_topk is not None, "If map_included is True, map_attention_topk must be provided"
+            assert (map_tensors is None) or (map_embeddings is None), "Provide either map_tensors or map_embeddings, not both"
+
+        # create config dict for snapshot saving
+        self.config_dict = {
+            "dynamic_features_num": dynamic_features_num,
+            "frames_num": frames_num,
+            "gru_hidden_size": gru_hidden_size,
+            "gru_num_layers": gru_num_layers,
+            "fc1dims": fc1dims,
+            "sage_hidden_dims": sage_hidden_dims,
+            "fc2dims": fc2dims,
+            "out_dim": out_dim,
+            "num_st_types": num_st_types,
+            "emb_dim": emb_dim,
+            "dropout": dropout,
+            "negative_slope": negative_slope,
+            "global_pooling": global_pooling,
+            "map_included": map_included,
+            "map_attention_topk": map_attention_topk,
+            "map_embeddings": map_embeddings
+            # map tensors not needed as inputs -> loaded from state dict directly
+        }
+
 
         #TODO validate inputs
         assert len(sage_hidden_dims) >= 1, "sage_hidden_dims must contain at least one element"
@@ -42,28 +70,37 @@ class GruSage(_nn.Module):
         last_step_dims = ldims1[-1]
 
         # 4b add map tensors if provided
-        if map_tensors is not None:
-            #TODO add embedding and hidden layers specs for map encoder
+        if map_included:
             self.map_provided = True
-            self.map_encoder = _MapEncoder(
-                map_float_features=_MapZscoreNorm.onfly(map_tensors['float_features']),
-                map_bool_features = map_tensors['bool_features'],
-                lane_type_cats=map_tensors['lane_type_cats'],
-                graph_edge_indexes=map_tensors['mgraph_edge_indexes'],
-                lane_embed_dim = mapenc_lane_embdim,
-                sage_hidden_dims=mapenc_sage_hdims,
-                dropout=dropout,
-                negative_slope=negative_slope
-            )
-            #TODO add attention specs
-            self.map_attention = _MapSpatialAttention(
-                map_centroids=map_tensors['mseg_centroids'],
-                k_neighbors=map_attention_topk
-            )
-
-            last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
-        else:
-            self.map_provided = False
+            self.map_tensors = (map_tensors is not None)
+            if map_tensors is not None:
+                # input map tensors are provided, so initialize map encoder and attention modules normally
+                #TODO add embedding and hidden layers specs for map encoder
+                self.map_encoder = _MapEncoder(
+                    map_float_features=_MapZscoreNorm.onfly(map_tensors['float_features']),
+                    map_bool_features = map_tensors['bool_features'],
+                    lane_type_cats=map_tensors['lane_type_cats'],
+                    graph_edge_indexes=map_tensors['mgraph_edge_indexes'],
+                    lane_embed_dim = mapenc_lane_embdim,
+                    sage_hidden_dims=mapenc_sage_hdims,
+                    dropout=dropout,
+                    negative_slope=negative_slope
+                )
+                #TODO add attention specs
+                self.map_attention = _MapSpatialAttention(
+                    map_centroids=map_tensors['mseg_centroids'],
+                    k_neighbors=map_attention_topk
+                )
+                last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
+            else:
+                # directly provide map embeddings as buffer, so not need to initialize map encoder, only attention module
+                self.register_buffer('map_embeddings', map_embeddings)
+                self.map_attention = _MapSpatialAttention(
+                    map_centroids=None, # do not register anything
+                    k_neighbors=map_attention_topk
+                )
+                last_step_dims += map_embeddings.shape[1] # add attentioned map embeddings to input features
+            
 
         # 5 - GraphSAGE layers
         sagedims = [last_step_dims] + sage_hidden_dims
@@ -99,6 +136,27 @@ class GruSage(_nn.Module):
         self.dropout = dropout
         self.negative_slope = negative_slope
 
+    @classmethod
+    def from_snapshot(cls,path:_Path):
+        snapshot = _torch.load(path.resolve())
+        model = cls(**snapshot['config'])
+        model.load_state_dict(snapshot['state_dict'])
+        return model
+
+    def save_snapshot(self, path:_Path):
+        state_dict = {k:v for k,v in self.state_dict().items() if not k.startswith('map_encoder')}
+        # map encoder is excluded as we directly load map tensors
+        # map attention module is included instead
+        with _torch.no_grad():
+            cfg = self.config_dict.copy()
+            cfg['map_embeddings'] = self.map_encoder() if self.map_provided else None,
+
+        _torch.save({
+            "config": cfg,
+            "state_dict": state_dict,
+        },path.resolve())
+
+
     def forward(self, data):
         x, edge_index, edge_attr, xsttype, batch = data.x, data.edge_index, data.edge_attr, data.xsttype, data.batch
 
@@ -121,7 +179,7 @@ class GruSage(_nn.Module):
         # 4b - map encoding and attention if map tensors provided
         if self.map_provided:
             last_pos_raw = data.pos_raw[:,-1,:]
-            map_embeddings = self.map_encoder()
+            map_embeddings = self.map_encoder() if self.map_tensors else self.map_embeddings
             map_context = self.map_attention(
                 vehicle_last_positions = last_pos_raw, # coords before zscore norm - [BATCH_SIZE, 2]
                 map_embeddings = map_embeddings # [NUM_TOTAL_SEGMENTS, EMBED_DIM]

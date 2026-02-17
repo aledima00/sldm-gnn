@@ -62,13 +62,17 @@ def stripnum(match:re.Match)->str:
     else:
         return f"E{sign}{num}"
 
-def getPlotFname(outdir:Path,mapIncluded:bool)->str:
+def getOutName(outdir:Path,mapIncluded:bool)->str:
     #TODO: launch checks at the beginning of the main script
     fnamebase = f"GRUSAGE_{'MAP_' if mapIncluded else ''}RUN_"
     for i in range(1,1001):
-        fname = f"{fnamebase}{i:03d}.png"
-        if not (outdir / fname).exists():
-            return fname
+        fname_noext = f"{fnamebase}{i:03d}"
+
+        imgname = fname_noext + ".png"
+        statename = fname_noext + ".pth"
+        
+        if not (outdir / imgname).exists() and not (outdir / statename).exists():
+            return fname_noext 
         
 def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
     """ Parameters as string for plot text box """
@@ -141,7 +145,9 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
         outpath.mkdir(parents=True, exist_ok=True)
 
         # string with all params in exp format
-        pfname = getPlotFname(outpath,mapIncluded=include_map)
+        outname = getOutName(outpath,mapIncluded=include_map)
+        plot_fname = outname + ".png"
+        state_fname = outname + ".pth"
 
         tr_gpath = inpath / 'train' / '.graphs'
         ev_gpath = inpath / 'eval' / '.graphs'
@@ -202,8 +208,8 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
             map_attention_topk=combDict.get('gs_map_attention_topk')
         )
         
-        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict)
-        plotAccuracies(tot_tracc,tot_vacc,bin_stats, outpath / pfname, lbnum, cut=cut, combDict=combDict)
+        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=outpath/state_fname)
+        plotAccuracies(tot_tracc,tot_vacc,bin_stats, outpath / plot_fname, lbnum, cut=cut, combDict=combDict)
 
 def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
     fig, (ax_plot, ax_text) = plt.subplots(
@@ -242,7 +248,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.savefig(outfile)
     plt.close(fig)
 
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict):
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict, best_state_outfile:Path|None=None):
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
@@ -254,7 +260,8 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:i
         verbose=verbosity_level>=1,#TODO: implement fine-grained verbosity levels
         progress_logging=PROGRESS_LOGGING,
         active_labels=train_metadata.active_labels,
-        neg_over_pos_ratio=train_metadata.getNegOverPosRatio()
+        neg_over_pos_ratio=train_metadata.getNegOverPosRatio(),
+        best_state_path=best_state_outfile
     )
     return (tot_tracc, tot_vacc, bin_stats)
 
