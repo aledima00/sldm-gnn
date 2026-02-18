@@ -3,12 +3,11 @@ import torch.nn as _nn
 import torch.nn.functional as _F
 
 class MapSpatialAttention(_nn.Module):
-    def __init__(self, map_centroids:_tch.Tensor|None, k_neighbors=5):
+    def __init__(self, map_centroids:_tch.Tensor, k_neighbors=5):
         super().__init__()
         # map_centroids: [NUM_TOTAL_SEGMENTS, 2] -> coordinates of segment centroids
         # map_embeddings: [NUM_TOTAL_SEGMENTS, EMBED_DIM] -> lane embeddings (after mapGNN)
-        if map_centroids is not None:
-            self.register_buffer('map_centroids', map_centroids, persistent=True) # persistent allow to save in state_dict but not update during training
+        self.register_buffer('map_centroids', map_centroids, persistent=False) # persistent allow to save in state_dict but not update during training
         self.k = k_neighbors # pick knn segments for attention
         
         # attention scores based on euclidian distance rather than direct transformer dot-product, as we want to focus on spatial neighborhood

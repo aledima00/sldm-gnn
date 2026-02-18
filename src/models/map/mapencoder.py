@@ -7,9 +7,9 @@ class MapEncoder(_nn.Module):
     def __init__(self, map_float_features:_tch.Tensor, map_bool_features:_tch.Tensor, lane_type_cats:_tch.Tensor, graph_edge_indexes:_tch.Tensor,*,lane_embed_dim:int=2,sage_hidden_dims:list[int]=[8,8],dropout,negative_slope):
         super().__init__()
         map_all_float_features = _tch.cat([map_float_features, map_bool_features.to(dtype=map_float_features.dtype)], dim=1)
-        self.register_buffer('map_float_features', map_all_float_features)
-        self.register_buffer('lane_type_cats', lane_type_cats)
-        self.register_buffer('graph_edge_indexes', graph_edge_indexes)
+        self.register_buffer('map_float_features', map_all_float_features, persistent=False)
+        self.register_buffer('lane_type_cats', lane_type_cats, persistent=False)
+        self.register_buffer('graph_edge_indexes', graph_edge_indexes, persistent=False)
 
         self.lane_embedding = _nn.Embedding(
             num_embeddings = int(_tch.max(lane_type_cats).item()) + 1,

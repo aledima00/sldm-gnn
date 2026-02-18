@@ -10,13 +10,14 @@ from .map.mapattention import MapSpatialAttention as _MapSpatialAttention
 from .map.mapInputNorm import MapZscoreNorm as _MapZscoreNorm
 
 class GruSage(_nn.Module):
-    def __init__(self, dynamic_features_num:int, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_included:bool=True,*, map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5, map_embeddings:_torch.Tensor|None=None):
+    def __init__(self, dynamic_features_num:int, frames_num:int, gru_hidden_size:int, gru_num_layers:int, fc1dims:list[int], sage_hidden_dims:list[int]=[128, 128], fc2dims:list[int]=[50,50], out_dim:int=1, num_st_types:int=256, emb_dim:int=12, dropout:float|None=None, negative_slope:float|None=None, global_pooling:_Lit['mean', 'max','double']='double',map_included:bool=True,*, map_tensors:dict|None=None, mapenc_sage_hdims:list[int]=[8,8], mapenc_lane_embdim:int=2, map_attention_topk:int=5, map_embeddings:_torch.Tensor|None=None, map_centroids:_torch.Tensor|None=None):
         super().__init__()
         # in order to initialize properly, if map_included is True, either map_tensors or map_embeddings must be provided, and map_attention_topk is required in any case
         if map_included:
             assert (map_tensors is not None) or (map_embeddings is not None), "If map_included is True, either map_tensors or map_embeddings must be provided"
             assert map_attention_topk is not None, "If map_included is True, map_attention_topk must be provided"
             assert (map_tensors is None) or (map_embeddings is None), "Provide either map_tensors or map_embeddings, not both"
+            assert (map_embeddings is None and map_centroids is None) or (map_embeddings is not None and map_centroids is not None), "If providing map_embeddings directly, also provide map_centroids for attention"
 
         # create config dict for snapshot saving
         self.config_dict = {
@@ -35,7 +36,8 @@ class GruSage(_nn.Module):
             "global_pooling": global_pooling,
             "map_included": map_included,
             "map_attention_topk": map_attention_topk,
-            "map_embeddings": map_embeddings
+            "map_embeddings": map_embeddings,
+            "map_centroids": map_centroids
             # map tensors not needed as inputs -> loaded from state dict directly
         }
 
@@ -94,9 +96,9 @@ class GruSage(_nn.Module):
                 last_step_dims += self.map_encoder.out_dim # add attentioned map embeddings to input features
             else:
                 # directly provide map embeddings as buffer, so not need to initialize map encoder, only attention module
-                self.register_buffer('map_embeddings', map_embeddings)
+                self.register_buffer('map_embeddings', map_embeddings,persistent=False)
                 self.map_attention = _MapSpatialAttention(
-                    map_centroids=None, # do not register anything
+                    map_centroids=map_centroids, # do not register anything
                     k_neighbors=map_attention_topk
                 )
                 last_step_dims += map_embeddings.shape[1] # add attentioned map embeddings to input features
@@ -149,7 +151,8 @@ class GruSage(_nn.Module):
         # map attention module is included instead
         with _torch.no_grad():
             cfg = self.config_dict.copy()
-            cfg['map_embeddings'] = self.map_encoder() if self.map_provided else None,
+            cfg['map_embeddings'] = self.map_encoder() if self.map_provided else None
+            cfg['map_centroids'] = self.map_attention.map_centroids if self.map_provided else None
 
         _torch.save({
             "config": cfg,
