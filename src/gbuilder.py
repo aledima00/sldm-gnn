@@ -146,11 +146,20 @@ def logworker(*,progress_queue:_Queue,total:int):
     progress.close()
 
 class GraphOnlineCreator:
-    def __init__(self,frames_num:int, m_radius:float, active_labels:list[int]|None, *,has_label:bool)->_GData:
+    def __init__(self,frames_num:int, m_radius:float, active_labels:list[int]|None, *,has_label:bool,norm_stats:dict|None=None)->_GData:
         self.frames_num = frames_num
         self.m_radius = m_radius
         self.active_labels = active_labels if active_labels is not None else [le.value for le in _LBEN]
         self.has_label = has_label
+        self.norm_stats_provided = norm_stats is not None
+        if self.norm_stats_provided:
+            assert 'mu' in norm_stats and 'sigma' in norm_stats, "norm_stats must contain 'mu' and 'sigma' keys"
+            for stat in ['mu','sigma']:
+                assert 'x' in norm_stats[stat] and 'xdims' in norm_stats[stat], f"norm_stats['{stat}'] must contain 'x' and 'xdims' keys"
+            self.mu_x = norm_stats['mu']['x']
+            self.sigma_x = norm_stats['sigma']['x']
+            self.mu_xdims = norm_stats['mu']['xdims']
+            self.sigma_xdims = norm_stats['sigma']['xdims']
 
         # ========================= field indexing =========================
         self.t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
@@ -277,8 +286,13 @@ class GraphOnlineCreator:
         # finally, store raw positions, copied before any future normalization
         gdata_dict['pos_raw'] = gdata_dict['x'][:,:, :2].clone()
 
+        # normalize if norm stats are provided
+        if self.norm_stats_provided:
+            gdata_dict['x'][:,:,:-1] = (gdata_dict['x'][:,:,:-1] - self.mu_x) / self.sigma_x
+            gdata_dict['xdims'] = (gdata_dict['xdims'] - self.mu_xdims) / self.sigma_xdims
+
         gdata = _GData(**gdata_dict)
-        return gdata        
+        return gdata
         
 class MapBuilder:
     filepath: _Path
