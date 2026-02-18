@@ -1,6 +1,6 @@
 import torch as _tch
 from torch_geometric.loader import DataLoader as _GDL
-from typing import Literal as _Lit, Iterable as _Iterable, Any as _Any, List as _List, Tuple as _Tuple, Callable as _Callable, TypeAlias as _TA
+from typing import Literal as _Lit, Iterable as _Iterable, Any as _Any, List as _List, Tuple as _Tuple, Callable as _Callable, TypeAlias as _TA, TypedDict as _TypedDict
 from colorama import Fore as _Fore, Back as _Back, Style as _Style
 from tqdm.auto import tqdm as _tqdm
 import numpy as _np
@@ -20,6 +20,30 @@ FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
 
 
 callTuple: _TA = _Tuple[_Callable, str]
+
+
+def saveSnapshot(model:_Grusage, path:_Path, *, norm_stats_dict:dict|None=None):
+    snapshot_dict = {
+        'state_dict': model.state_dict_no_mapenc(),
+        'ip_dict': model.input_params_dict(),
+        'norm_stat_dict': norm_stats_dict
+    }
+    _tch.save(snapshot_dict, path.resolve())
+
+class SnapshotDict(_TypedDict):
+    state_dict: dict
+    ip_dict: dict
+    norm_stat_dict: dict|None
+
+def loadSnapshot(path:_Path)->SnapshotDict:
+    pr = path.resolve()
+    assert pr.exists() and pr.is_file(), f"Snapshot file not found at {path}"
+    snap = _tch.load(pr)
+    assert 'state_dict' in snap and 'ip_dict' in snap, f"Snapshot file at {path} is missing required keys"
+    if 'norm_stat_dict' not in snap:
+        snap['norm_stat_dict'] = None
+    return snap
+
 class ParamSweepContext:
 
     def __init__(self,params_dict:dict[str, _List|callTuple]):
@@ -131,7 +155,7 @@ def getLbName(label_idx:int,active_labels)->str:
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None):
+def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None,norm_stats_dict_for_snapshot:dict|None=None):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     posw = _tch.tensor(neg_over_pos_ratio, device=device)
@@ -239,7 +263,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
 
             if tot_val_accuracy > best_vacc and best_state_path is not None:
                 best_vacc = tot_val_accuracy
-                model.save_snapshot(best_state_path.resolve())
+                saveSnapshot(model, best_state_path, norm_stats_dict=norm_stats_dict_for_snapshot)
                 tprint(f"{_Fore.GREEN}{_Style.BRIGHT}New best model saved with Validation Accuracy: {best_vacc:.4f}{_Style.RESET_ALL}")
 
             per_label_val_acc = (tot_correct.sum(dim=0).cpu().float().numpy() / tot_mlb).tolist()

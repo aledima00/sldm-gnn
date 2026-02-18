@@ -207,8 +207,12 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
             mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
             map_attention_topk=combDict.get('gs_map_attention_topk')
         )
-        
-        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=outpath/state_fname)
+
+        mu_sigma_dict = {
+            'mu': mu_sigma[0],
+            'sigma': mu_sigma[1]
+        }
+        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=outpath/state_fname, norm_stats_dict_for_snapshot=mu_sigma_dict)
         plotAccuracies(tot_tracc,tot_vacc,bin_stats, outpath / plot_fname, lbnum, cut=cut, combDict=combDict)
 
 def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
@@ -248,7 +252,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.savefig(outfile)
     plt.close(fig)
 
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict, best_state_outfile:Path|None=None):
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None):
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
@@ -261,7 +265,8 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:i
         progress_logging=PROGRESS_LOGGING,
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio(),
-        best_state_path=best_state_outfile
+        best_state_path=best_state_outfile,
+        norm_stats_dict_for_snapshot=norm_stats_dict_for_snapshot
     )
     return (tot_tracc, tot_vacc, bin_stats)
 

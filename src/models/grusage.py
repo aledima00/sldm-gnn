@@ -138,26 +138,15 @@ class GruSage(_nn.Module):
         self.dropout = dropout
         self.negative_slope = negative_slope
 
-    @classmethod
-    def from_snapshot(cls,path:_Path):
-        snapshot = _torch.load(path.resolve())
-        model = cls(**snapshot['config'])
-        model.load_state_dict(snapshot['state_dict'])
-        return model
-
-    def save_snapshot(self, path:_Path):
-        state_dict = {k:v for k,v in self.state_dict().items() if not k.startswith('map_encoder')}
-        # map encoder is excluded as we directly load map tensors
-        # map attention module is included instead
+    def state_dict_no_mapenc(self):
+        return {k:v for k,v in self.state_dict().items() if not k.startswith('map_encoder')}
+    
+    def input_params_dict(self):
+        ipd = self.config_dict.copy()
         with _torch.no_grad():
-            cfg = self.config_dict.copy()
-            cfg['map_embeddings'] = self.map_encoder() if self.map_provided else None
-            cfg['map_centroids'] = self.map_attention.map_centroids if self.map_provided else None
-
-        _torch.save({
-            "config": cfg,
-            "state_dict": state_dict,
-        },path.resolve())
+            ipd['map_embeddings'] = self.map_encoder() if self.map_provided else None
+            ipd['map_centroids'] = self.map_attention.map_centroids if self.map_provided else None
+        return ipd
 
 
     def forward(self, data):
