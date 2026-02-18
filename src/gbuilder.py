@@ -274,6 +274,9 @@ class GraphOnlineCreator:
             # return graph data object
             gdata_dict['y'] = y
 
+        # finally, store raw positions, copied before any future normalization
+        gdata_dict['pos_raw'] = gdata_dict['x'][:,:, :2].clone()
+
         gdata = _GData(**gdata_dict)
         return gdata        
         
