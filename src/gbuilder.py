@@ -156,10 +156,10 @@ class GraphOnlineCreator:
             assert 'mu' in norm_stats and 'sigma' in norm_stats, "norm_stats must contain 'mu' and 'sigma' keys"
             for stat in ['mu','sigma']:
                 assert 'x' in norm_stats[stat] and 'xdims' in norm_stats[stat], f"norm_stats['{stat}'] must contain 'x' and 'xdims' keys"
-            self.mu_x = norm_stats['mu']['x'].cuda()
-            self.sigma_x = norm_stats['sigma']['x'].cuda()
-            self.mu_xdims = norm_stats['mu']['xdims'].cuda()
-            self.sigma_xdims = norm_stats['sigma']['xdims'].cuda()
+            self.mu_x = norm_stats['mu']['x'].cpu()
+            self.sigma_x = norm_stats['sigma']['x'].cpu()
+            self.mu_xdims = norm_stats['mu']['xdims'].cpu()
+            self.sigma_xdims = norm_stats['sigma']['xdims'].cpu()
 
         # ========================= field indexing =========================
         self.t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
