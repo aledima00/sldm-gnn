@@ -50,6 +50,9 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
     # ...
     # =============== end ===============
 
+    with open("out.csv", "w") as logfile:
+        logfile.write("PredictionLabels,\n")
+
     while not terminate_event.is_set():
         with condition:
             while (len(pack_queue) < pack_size) and not terminate_event.is_set():
@@ -60,10 +63,17 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
 
             # =============== forward model here ===============
             gdata = gc(packDf).cuda()
-            print(f"new graph:", gdata)
-            with torch.inference_mode():
-                out = model(gdata)
-            print(f"model output: {out}")
+            with open("out.csv", "a") as logfile:
+                if gdata.x.shape[0] != 0:
+                    with torch.inference_mode():
+                        out = model(gdata)
+                        scores = torch.sigmoid(out)
+                        preds = (scores >= 0.5).float()
+                        print(f"predictions: {preds.item()}")
+                        logfile.write(f"{preds.item()},\n")
+                else:
+                    print(".")  # No nodes in the graph, skip inference but print a dot to show we're alive
+                    #logfile.write(".\n")
             # =============== end ===============
             
             with condition:

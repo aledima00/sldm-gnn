@@ -174,6 +174,13 @@ class GraphOnlineCreator:
 
     def finalizePdf(self, pack_df:_pd.DataFrame)->_pd.DataFrame:
         """ Zero-Padding also here """
+
+        # first handle empty case just by naming the columns and returning
+        if pack_df.empty:
+            empty_df = _pd.DataFrame(columns=self.tot_fnames + ['FrameId'])
+            #print("Warning: empty pack dataframe received in finalizePdf, returning empty dataframe with correct columns")
+            return empty_df
+
         pack_df['PresenceFlag'] = 1.0
         pack_df['PresenceFlag'] = pack_df['PresenceFlag'].astype('float16')
 
@@ -209,9 +216,8 @@ class GraphOnlineCreator:
         # ========================= nodes =========================
 
         gdata_dict = dict()
-        pack_df = self.finalizePdf(full_pack_df).copy().sort_values(['VehicleId','FrameId'])
-        raw_feats = pack_df[self.tot_fnames].to_numpy().reshape(-1, self.frames_num, self.tot_fnum)  # num_vehicles x num_frames x num_features
-
+        pack_df = self.finalizePdf(full_pack_df).copy()
+        raw_feats = pack_df[self.tot_fnames].to_numpy(dtype=_np.float32).reshape(-1, self.frames_num, self.tot_fnum)  # num_vehicles x num_frames x num_features
         x = raw_feats[:,:,:self.t_fnum] # temporal features
         # set angles to rad
         x[:,:,3] = _np.deg2rad( x[:,:,3] )
@@ -224,7 +230,7 @@ class GraphOnlineCreator:
         xsttype = _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
 
         # remove width and length (first 2 columns) from static features
-        xdims = xdims.reshape(xdims.shape[0], -1)  # num_vehicles x num_static_features
+        xdims = xdims.reshape(xdims.shape[0], -1) if xdims.shape[0] > 0 else _np.zeros((0, self.st_fnum - 2))  # num_vehicles x num_static_features
         xdims = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
         
         # ========================= edge construction =========================
