@@ -73,7 +73,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
                         logfile.write(f"{preds.item()},{scores.item():.6f}\n")
                 else:
                     print(".")  # No nodes in the graph, skip inference but print a dot to show we're alive
-                    #logfile.write(".\n")
+                    logfile.write(".,.\n")
             # =============== end ===============
             
             with condition:
