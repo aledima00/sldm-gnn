@@ -24,7 +24,6 @@ GRUSAGE_PARAMS_DICT = {
     "lr":[3e-4],
     "weight_decay":[5e-5],
 
-    "tf_rotate":[False], #FIXME: bad implementation of rotation for map data
     "tf_pos_noise":[True],
     "pos_noise_std":[0.2],
     "pos_noise_std_max":[0.2],
@@ -97,8 +96,6 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
     params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
     params += "Data Augmentation:\n"
-    if combDict.get('tf_rotate'):
-        params += " - Random Rotate\n"
     if combDict.get('tf_pos_noise'):
         if combDict.get('pos_noise_prop_to_speed'):
             POS_NOISE_STD_MAX = combDict.get('pos_noise_std_max')
@@ -155,8 +152,6 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
         ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
 
         transform = []
-        if combDict.get('tf_rotate'):
-            transform.append( TFs.RandomRotate(metadata=tr_metadata) )
         if combDict.get('tf_pos_noise'):
             posnoisestd = combDict.get('pos_noise_std')
             posnoisestdmax = combDict.get('pos_noise_std_max')

@@ -40,40 +40,6 @@ class RemoveDimsFeatures:
         if hasattr(data, 'xdims'):
             del data.xdims
         return data
-    
-class RandomRotate:
-    def __init__(self, metadata:_MD):
-        self.num_frames = metadata.frames_num
-        self.posMask = metadata.getFeaturesMask('pos')
-        self.hSinMask = metadata.getFeaturesMask('hsin')
-        self.hCosMask = metadata.getFeaturesMask('hcos')
-    def __call__(self, data:_GData)->_GData:
-        # random rotation angle
-        # TODO:CHECK this implementation
-        dev = data.x.device
-        theta = _tch.rand(1,device=dev).item() * 2 * _tch.pi
-        cos_theta = _tch.cos(_tch.tensor(theta, device=dev))
-        sin_theta = _tch.sin(_tch.tensor(theta, device=dev))
-        # define rotation matrix
-        RotMat = _tch.tensor([
-            [cos_theta, -sin_theta],
-            [sin_theta, cos_theta]
-        ], device=dev)
-
-        # extract positions
-        positions = data.x[:,:,self.posMask]
-        # rotate positions
-        positions = positions @ RotMat.T  # shape [num_nodes, num_features, 2]
-        data.x[:,:,self.posMask] = positions
-
-        # adjust headings
-        hsin = data.x[:,:,self.hSinMask]
-        hcos = data.x[:,:,self.hCosMask]
-        data.x[:,:,self.hSinMask] = hsin*cos_theta + hcos*sin_theta
-        data.x[:,:,self.hCosMask] = hcos*cos_theta - hsin*sin_theta
-        
-
-        return data
 
 class CutFrames:
     def __init__(self, cut:int):
