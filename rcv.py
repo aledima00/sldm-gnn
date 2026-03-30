@@ -80,6 +80,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
                 for _ in range(stride):
                     if pack_queue:
                         pack_queue.popleft()  # Remove frames based on stride
+                #print(f"Queue size after stride: {len(pack_queue)}")
 
 @click.command()
 @click.option('-f', '--fifo-path', 'fifo_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path), required=True, help='Path to the FIFO (named pipe) to read from.')
