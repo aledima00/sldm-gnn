@@ -27,10 +27,10 @@ def _moving_average(values: list[float], window_size: int) -> list[float]:
     return out
 
 
-def _load_gt_events(gt_csv: Path) -> tuple[int, list[float]]:
-    """Load GT labels and return (n_rows, trigger_times_s)."""
+def _load_gt_events(gt_csv: Path) -> tuple[list[int], list[float]]:
+    """Load GT labels and return (binary_labels, trigger_times_s)."""
     trigger_times_s: list[float] = []
-    total_rows = 0
+    gt_labels: list[int] = []
 
     with gt_csv.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -46,7 +46,6 @@ def _load_gt_events(gt_csv: Path) -> tuple[int, list[float]]:
             )
 
         for row_idx, row in enumerate(reader):
-            total_rows += 1
             value_raw = (row.get("MLBEncoded") or "").strip()
             try:
                 label_value = float(value_raw)
@@ -55,24 +54,26 @@ def _load_gt_events(gt_csv: Path) -> tuple[int, list[float]]:
                     f"Valore MLBEncoded non numerico alla riga {row_idx + 2}: {value_raw!r}"
                 ) from exc
 
-            if label_value >= 0.5:
+            gt_bin = 1 if label_value >= 0.5 else 0
+            gt_labels.append(gt_bin)
+
+            if gt_bin == 1:
                 time_s = (row_idx * SAMPLE_MS) / 1000.0
                 trigger_times_s.append(time_s)
 
-    return total_rows, trigger_times_s
+    return gt_labels, trigger_times_s
 
 
-def _load_predictions(pred_csv: Path) -> tuple[list[float], list[float]]:
-    """Load prediction labels and scores from CSV."""
+def _load_prediction_scores(pred_csv: Path) -> list[float]:
+    """Load prediction scores from CSV."""
     scores: list[float] = []
-    labels: list[float] = []
 
     with pred_csv.open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if not reader.fieldnames:
             raise click.ClickException("CSV predictions senza header.")
 
-        required = {"PredictionLabels", "Scores"}
+        required = {"Scores"}
         missing = required - set(reader.fieldnames)
         if missing:
             raise click.ClickException(
@@ -81,15 +82,7 @@ def _load_predictions(pred_csv: Path) -> tuple[list[float], list[float]]:
             )
 
         for row_idx, row in enumerate(reader):
-            label_raw = (row.get("PredictionLabels") or "").strip()
             value_raw = (row.get("Scores") or "").strip()
-
-            try:
-                label_value = float(label_raw)
-            except ValueError as exc:
-                raise click.ClickException(
-                    f"Valore PredictionLabels non numerico alla riga {row_idx + 2}: {label_raw!r}"
-                ) from exc
 
             try:
                 score_value = float(value_raw)
@@ -98,10 +91,9 @@ def _load_predictions(pred_csv: Path) -> tuple[list[float], list[float]]:
                     f"Valore Scores non numerico alla riga {row_idx + 2}: {value_raw!r}"
                 ) from exc
 
-            labels.append(label_value)
             scores.append(score_value)
 
-    return labels, scores
+    return scores
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -150,6 +142,13 @@ def _load_predictions(pred_csv: Path) -> tuple[list[float], list[float]]:
     show_default=True,
     help="Numero di frame (da 10ms) usati per prediction; shift in avanti delle GT.",
 )
+@click.option(
+    "--threshold",
+    type=click.FloatRange(min=0.0, max=1.0),
+    default=0.5,
+    show_default=True,
+    help="Soglia per classificare i prediction scores in positivi/negativi.",
+)
 def main(
     gt_csv: Path,
     pred_csv: Path,
@@ -158,10 +157,12 @@ def main(
     show: bool,
     smooth_window_ms: float | None,
     pack_size: int,
+    threshold: float,
 ) -> None:
     """Confronta temporalmente GT e prediction scores con densita diverse."""
-    gt_count, gt_triggers_s = _load_gt_events(gt_csv)
-    pred_labels, pred_scores = _load_predictions(pred_csv)
+    gt_labels, gt_triggers_s = _load_gt_events(gt_csv)
+    gt_count = len(gt_labels)
+    pred_scores = _load_prediction_scores(pred_csv)
 
     if not pred_scores:
         raise click.ClickException("Nessuno score trovato nel CSV predictions.")
@@ -177,6 +178,35 @@ def main(
     if smooth_window_ms is not None:
         smooth_window_samples = max(1, int(round(smooth_window_ms / pred_step_ms)))
         pred_scores_smooth = _moving_average(pred_scores, smooth_window_samples)
+
+    scores_for_classification = pred_scores_smooth if pred_scores_smooth is not None else pred_scores
+    pred_binary = [1 if score >= threshold else 0 for score in scores_for_classification]
+    pred_positive = sum(pred_binary)
+    pred_negative = len(pred_binary) - pred_positive
+
+    tp = 0
+    fp = 0
+    fn = 0
+    tn = 0
+    valid_pairs = 0
+    for i, pred_bin in enumerate(pred_binary):
+        gt_idx = (i * stride) - pack_size
+        if 0 <= gt_idx < gt_count:
+            gt_bin = gt_labels[gt_idx]
+            valid_pairs += 1
+            if pred_bin == 1 and gt_bin == 1:
+                tp += 1
+            elif pred_bin == 1 and gt_bin == 0:
+                fp += 1
+            elif pred_bin == 0 and gt_bin == 1:
+                fn += 1
+            else:
+                tn += 1
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else None
+    recall = tp / (tp + fn) if (tp + fn) > 0 else None
+    precision_txt = f"{precision:.4f}" if precision is not None else "N/A"
+    recall_txt = f"{recall:.4f}" if recall is not None else "N/A"
 
     gt_total_time_s = ((max(gt_count - 1, 0)) * SAMPLE_MS) / 1000.0 + gt_shift_s
     pred_total_time_s = pred_times_s[-1]
@@ -218,6 +248,15 @@ def main(
         )
         first_trigger = False
 
+    ax.axhline(
+        y=threshold,
+        color="green",
+        linewidth=1.5,
+        linestyle="--",
+        alpha=0.9,
+        label=f"Threshold ({threshold:g})",
+    )
+
     ax.set_title("Ground Truth Trigger vs Prediction Score", loc="left")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Score")
@@ -225,25 +264,48 @@ def main(
     ax.grid(True, alpha=0.25)
     ax.legend(loc="upper right")
 
-    info_text = (
+    info_line_1 = (
         f"GT samples: {gt_count} | GT triggers: {len(gt_triggers_s)} | "
-        f"Predictions: {len(pred_scores)} | Pred labels positive: {sum(l >= 0.5 for l in pred_labels)} | "
-        f"Stride: {stride} | Pack size: {pack_size} ({gt_shift_s * 1000.0:g}ms shift)"
+        f"Predictions: {len(pred_scores)} | Pred +: {pred_positive} | Pred -: {pred_negative} | "
+        f"Stride: {stride} | Pack size: {pack_size} ({gt_shift_s * 1000.0:g}ms shift) | "
+        f"Threshold: {threshold:g}"
     )
     if smooth_window_ms is not None and smooth_window_samples is not None:
-        info_text += f" | Smooth window: {smooth_window_ms:g}ms (~{smooth_window_samples} pred samples)"
+        info_line_1 += (
+            f" | Smooth: {smooth_window_ms:g}ms (~{smooth_window_samples} pred samples)"
+            " | Classification on: smoothed"
+        )
+    else:
+        info_line_1 += " | Classification on: raw"
+
+    info_line_2 = (
+        rf"$\bf{{Precision}}$: {precision_txt} | "
+        rf"$\bf{{Recall}}$: {recall_txt} | "
+        f"TP: {tp} FP: {fp} FN: {fn} TN: {tn} | Eval pairs: {valid_pairs}"
+    )
+
     ax.text(
         0.99,
-        1.02,
-        info_text,
+        1.09,
+        info_line_1,
         transform=ax.transAxes,
         fontsize=9,
         color="#444444",
         va="bottom",
         ha="right",
     )
+    ax.text(
+        0.99,
+        1.03,
+        info_line_2,
+        transform=ax.transAxes,
+        fontsize=9,
+        color="#222222",
+        va="bottom",
+        ha="right",
+    )
 
-    plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
+    plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.84])
 
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
