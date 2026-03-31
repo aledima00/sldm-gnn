@@ -38,7 +38,7 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                     if len(pack_queue) >= pack_size:
                         condition.notify_all()  # Notify the consumer that a pack is ready
 
-def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path):
+def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path):
     snap = loadSnapshot(snapshot_path)
     gc = GraphOnlineCreator(frames_num=pack_size, m_radius=25, active_labels=None, has_label=False, norm_stats=snap['norm_stat_dict'])
     
@@ -50,7 +50,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
     # ...
     # =============== end ===============
 
-    with open("out.csv", "w") as logfile:
+    with open(output_csv_file, "w") as logfile:
         logfile.write("PredictionLabels,Scores\n")
 
     while not terminate_event.is_set():
@@ -63,7 +63,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
 
             # =============== forward model here ===============
             gdata = gc(packDf).cuda()
-            with open("out.csv", "a") as logfile:
+            with open(output_csv_file, "a") as logfile:
                 if gdata.x.shape[0] != 0:
                     with torch.inference_mode():
                         out = model(gdata)
@@ -87,7 +87,8 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
 @click.option('-p', '--pack-size', 'pack_size', type=int, required=True, help='Number of frames to pack together before processing.')
 @click.option('--stride', 'stride', type=int, default=1, help='Number of frames to stride after each pack processing.')
 @click.option('-s','--snapshot-path', 'snapshot_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path), required=True, help='Path to the model weights file (.pth).')
-def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path):
+@click.option('-O', '--output-csv-file', 'output_csv_file', type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path), default="out.csv", help='Path to the output CSV file for predictions.')
+def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path, output_csv_file: Path):
     # apre la fifo in lettura (bloccante finché un writer non si connette)
     fd = os.open(fifo_path.resolve(),  os.O_RDONLY)
     pack_queue = deque()
@@ -97,7 +98,7 @@ def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path):
 
     try:
         t1 = threading.Thread(target=pipeout_producer, args=(fd, pack_queue, pack_size, condition, terminate_event))
-        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path))
+        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path, output_csv_file))
         t1.start()
         t2.start()
         t1.join()
