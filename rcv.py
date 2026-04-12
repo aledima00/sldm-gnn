@@ -60,6 +60,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
             if not terminate_event.is_set():
                 packDf = pd.concat(list(pack_queue)[:pack_size], keys=range(0, pack_size), names=['FrameId']).reset_index(level=0)
         if not terminate_event.is_set():
+            trigger_detected = False
 
             # =============== forward model here ===============
             gdata = gc(packDf).cuda()
@@ -69,6 +70,7 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
                         out = model(gdata)
                         scores = torch.sigmoid(out)
                         preds = (scores >= 0.5).int()
+                        trigger_detected = bool((scores > 0.5).item())
                         print(f"prediction: {preds.item()}, score: {scores.item()}")
                         logfile.write(f"{preds.item()},{scores.item():.6f}\n")
                 else:
@@ -77,9 +79,12 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
             # =============== end ===============
             
             with condition:
-                for _ in range(stride):
-                    if pack_queue:
-                        pack_queue.popleft()  # Remove frames based on stride
+                if trigger_detected:
+                    pack_queue.clear()
+                else:
+                    for _ in range(stride):
+                        if pack_queue:
+                            pack_queue.popleft()  # Remove frames based on stride
                 #print(f"Queue size after stride: {len(pack_queue)}")
 
 @click.command()
