@@ -1,4 +1,5 @@
 import csv
+from bisect import bisect_right
 from pathlib import Path
 
 import click
@@ -25,6 +26,36 @@ def _moving_average(values: list[float], window_size: int) -> list[float]:
         out.append(running_sum / current_count)
 
     return out
+
+
+def _linear_interpolate(times_s: list[float], values: list[float], target_s: float) -> float | None:
+    """Linearly interpolate value at target time over a monotonic timeline."""
+    if not times_s or not values or len(times_s) != len(values):
+        return None
+
+    if len(times_s) == 1:
+        return values[0] if abs(target_s - times_s[0]) < 1e-12 else None
+
+    if target_s < times_s[0] or target_s > times_s[-1]:
+        return None
+
+    right = bisect_right(times_s, target_s)
+    if right == 0:
+        return values[0]
+    if right >= len(times_s):
+        return values[-1]
+
+    left = right - 1
+    t0 = times_s[left]
+    t1 = times_s[right]
+    v0 = values[left]
+    v1 = values[right]
+
+    if abs(t1 - t0) < 1e-12:
+        return v0
+
+    alpha = (target_s - t0) / (t1 - t0)
+    return v0 + alpha * (v1 - v0)
 
 
 def _load_gt_events(gt_csv: Path) -> tuple[list[int], list[float]]:
@@ -180,28 +211,35 @@ def main(
         pred_scores_smooth = _moving_average(pred_scores, smooth_window_samples)
 
     scores_for_classification = pred_scores_smooth if pred_scores_smooth is not None else pred_scores
-    pred_binary = [1 if score >= threshold else 0 for score in scores_for_classification]
-    pred_positive = sum(pred_binary)
-    pred_negative = len(pred_binary) - pred_positive
 
     tp = 0
     fp = 0
     fn = 0
     tn = 0
+    pred_positive = 0
+    pred_negative = 0
     valid_pairs = 0
-    for i, pred_bin in enumerate(pred_binary):
-        gt_idx = (i * stride) - pack_size
-        if 0 <= gt_idx < gt_count:
-            gt_bin = gt_labels[gt_idx]
-            valid_pairs += 1
-            if pred_bin == 1 and gt_bin == 1:
-                tp += 1
-            elif pred_bin == 1 and gt_bin == 0:
-                fp += 1
-            elif pred_bin == 0 and gt_bin == 1:
-                fn += 1
-            else:
-                tn += 1
+    for gt_idx, gt_bin in enumerate(gt_labels):
+        target_time_s = ((gt_idx + pack_size) * SAMPLE_MS) / 1000.0
+        interp_score = _linear_interpolate(pred_times_s, scores_for_classification, target_time_s)
+        if interp_score is None:
+            continue
+
+        pred_bin = 1 if interp_score >= threshold else 0
+        valid_pairs += 1
+        if pred_bin == 1:
+            pred_positive += 1
+        else:
+            pred_negative += 1
+
+        if pred_bin == 1 and gt_bin == 1:
+            tp += 1
+        elif pred_bin == 1 and gt_bin == 0:
+            fp += 1
+        elif pred_bin == 0 and gt_bin == 1:
+            fn += 1
+        else:
+            tn += 1
 
     precision = tp / (tp + fp) if (tp + fp) > 0 else None
     recall = tp / (tp + fn) if (tp + fn) > 0 else None
@@ -266,22 +304,23 @@ def main(
 
     info_line_1 = (
         f"GT samples: {gt_count} | GT triggers: {len(gt_triggers_s)} | "
-        f"Predictions: {len(pred_scores)} | Pred +: {pred_positive} | Pred -: {pred_negative} | "
+        f"Predictions: {len(pred_scores)} | Eval pairs: {valid_pairs} | "
+        f"Pred +: {pred_positive} | Pred -: {pred_negative} | "
         f"Stride: {stride} | Pack size: {pack_size} ({gt_shift_s * 1000.0:g}ms shift) | "
         f"Threshold: {threshold:g}"
     )
     if smooth_window_ms is not None and smooth_window_samples is not None:
         info_line_1 += (
             f" | Smooth: {smooth_window_ms:g}ms (~{smooth_window_samples} pred samples)"
-            " | Classification on: smoothed"
+            " | Classification on: all GT samples (linear interp on smoothed)"
         )
     else:
-        info_line_1 += " | Classification on: raw"
+        info_line_1 += " | Classification on: all GT samples (linear interp on raw)"
 
     info_line_2 = (
         rf"$\bf{{Precision}}$: {precision_txt} | "
         rf"$\bf{{Recall}}$: {recall_txt} | "
-        f"TP: {tp} FP: {fp} FN: {fn} TN: {tn} | Eval pairs: {valid_pairs}"
+        f"TP: {tp} FP: {fp} FN: {fn} TN: {tn}"
     )
 
     ax.text(
