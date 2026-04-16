@@ -13,30 +13,47 @@ import torch
 
 MAX_JSON_CHUNK_SIZE = 32 * 1024  # 32KB ~ about 300 vehicles in each frame
 
+def signal_termination(condition: threading.Condition, terminate_event: threading.Event, reason: str | None = None):
+    if reason:
+        print(reason)
+    terminate_event.set()
+    with condition:
+        condition.notify_all()  # Wake up waiting threads so they can exit cleanly
+
+
 def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: threading.Condition, terminate_event: threading.Event):
     buffer = ""
-    while not terminate_event.is_set():
-        chunk = os.read(fd, MAX_JSON_CHUNK_SIZE).decode()
-        #print(f"CHUNKSIZE: {len(chunk)}")
-        if not chunk:
-            print("Writer has closed the FIFO. Exiting.")
-            terminate_event.set()
-            with condition:
-                condition.notify_all()  # Notify the consumer to exit if waiting
-            break
-        
-        buffer += chunk
-        while '\n' in buffer:
-            # cycle over the lines/frames
-            line, buffer = buffer.split('\n', 1)
-            if line.strip():
-                data = json.loads(line)
-                df = pd.DataFrame(data)
-                #print("received df:\n",df)
-                with condition:
-                    pack_queue.append(df)
-                    if len(pack_queue) >= pack_size:
-                        condition.notify_all()  # Notify the consumer that a pack is ready
+    try:
+        while not terminate_event.is_set():
+            try:
+                chunk = os.read(fd, MAX_JSON_CHUNK_SIZE).decode()
+            except OSError as e:
+                print(f"Error reading from Named Pipe: {e}. Exiting producer thread.")
+                signal_termination(condition, terminate_event, "Producer thread terminating due to read error.")
+                break
+            #print(f"CHUNKSIZE: {len(chunk)}")
+            if not chunk:
+                signal_termination(condition, terminate_event, "Writer has closed the Named Pipe. Exiting producer thread.")
+                break
+            
+            buffer += chunk
+            while '\n' in buffer:
+                # cycle over the lines/frames
+                line, buffer = buffer.split('\n', 1)
+                if line.strip():
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        signal_termination(condition, terminate_event, f"Malformed JSON from Named Pipe: {e}. Exiting producer thread.")
+                        return
+                    df = pd.DataFrame(data)
+                    #print("received df:\n",df)
+                    with condition:
+                        pack_queue.append(df)
+                        if len(pack_queue) >= pack_size:
+                            condition.notify_all()  # Notify the consumer that a pack is ready
+    finally:
+        signal_termination(condition, terminate_event, "Producer thread terminating.")
 
 def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path):
     snap = loadSnapshot(snapshot_path)
