@@ -21,7 +21,7 @@ PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 GRUSAGE_PARAMS_DICT = {
     "epochs":[200],
     "batch_size":[32],
-    "lr":[3e-4],
+    "lr":[1e-3],
     "weight_decay":[5e-5],
 
     "tf_pos_noise":[True],
@@ -32,13 +32,13 @@ GRUSAGE_PARAMS_DICT = {
     "emb_dim":[8],
     "num_possible_station_types":[256],
 
-    "gs_dropout":[0.1],
-    "gs_neg_slope":[0.05],
+    "gs_dropout":[0.25],
+    "gs_neg_slope":[0.1],
 
-    "gs_hidden_size":[64],
+    "gs_hidden_size":[96],
     "gs_gru_hidden_size":(lambda hs: hs, "gs_hidden_size"),
     "gs_gru_num_layers":[1],
-    "gs_fc1_dims":(lambda hs: [],"gs_hidden_size") , #+[] #TODO:REMOVE
+    "gs_fc1_dims":(lambda hs: [hs],"gs_hidden_size") , #+[] #TODO:REMOVE
     "gs_sage_hidden_dims":(lambda hs: [hs, hs],"gs_hidden_size"),
     "gs_pooling":['double'],
     "gs_fc2_dims":(lambda hs: [hs//3],"gs_hidden_size"),
