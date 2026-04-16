@@ -4,6 +4,7 @@ from pathlib import Path
 
 import click
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 SAMPLE_MS = 10.0
@@ -58,39 +59,43 @@ def _linear_interpolate(times_s: list[float], values: list[float], target_s: flo
     return v0 + alpha * (v1 - v0)
 
 
-def _load_gt_events(gt_csv: Path) -> tuple[list[int], list[float]]:
+def _load_gt_events(gt_parquet: Path) -> tuple[list[int], list[float]]:
     """Load GT labels and return (binary_labels, trigger_times_s)."""
     trigger_times_s: list[float] = []
     gt_labels: list[int] = []
 
-    with gt_csv.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        if not reader.fieldnames:
-            raise click.ClickException("CSV ground truth senza header.")
+    try:
+        gt_df = pd.read_parquet(gt_parquet)
+    except Exception as exc:
+        raise click.ClickException(f"Impossibile leggere il Parquet ground truth: {exc}") from exc
 
-        required = {"PackId", "MLBEncoded"}
-        missing = required - set(reader.fieldnames)
-        if missing:
+    required = {"PackId", "MLBEncoded"}
+    missing = required - set(gt_df.columns)
+    if missing:
+        raise click.ClickException(
+            "Parquet ground truth invalido: colonne mancanti "
+            + ", ".join(sorted(missing))
+        )
+
+    for row_idx, value_raw in enumerate(gt_df["MLBEncoded"].tolist()):
+        try:
+            label_value = float(value_raw)
+        except (TypeError, ValueError) as exc:
             raise click.ClickException(
-                "CSV ground truth invalido: colonne mancanti "
-                + ", ".join(sorted(missing))
+                f"Valore MLBEncoded non numerico alla riga {row_idx + 1}: {value_raw!r}"
+            ) from exc
+
+        if pd.isna(label_value):
+            raise click.ClickException(
+                f"Valore MLBEncoded non valido alla riga {row_idx + 1}: {value_raw!r}"
             )
 
-        for row_idx, row in enumerate(reader):
-            value_raw = (row.get("MLBEncoded") or "").strip()
-            try:
-                label_value = float(value_raw)
-            except ValueError as exc:
-                raise click.ClickException(
-                    f"Valore MLBEncoded non numerico alla riga {row_idx + 2}: {value_raw!r}"
-                ) from exc
+        gt_bin = 1 if label_value >= 0.5 else 0
+        gt_labels.append(gt_bin)
 
-            gt_bin = 1 if label_value >= 0.5 else 0
-            gt_labels.append(gt_bin)
-
-            if gt_bin == 1:
-                time_s = (row_idx * SAMPLE_MS) / 1000.0
-                trigger_times_s.append(time_s)
+        if gt_bin == 1:
+            time_s = (row_idx * SAMPLE_MS) / 1000.0
+            trigger_times_s.append(time_s)
 
     return gt_labels, trigger_times_s
 
@@ -129,11 +134,11 @@ def _load_prediction_scores(pred_csv: Path) -> list[float]:
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
-    "--gt-csv",
-    "gt_csv",
+    "--gt-parquet",
+    "gt_parquet",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
-    help='CSV ground truth con colonne ["PackId","MLBEncoded"].',
+    help='Parquet ground truth con colonne ["PackId","MLBEncoded"].',
 )
 @click.option(
     "--pred-csv",
@@ -181,7 +186,7 @@ def _load_prediction_scores(pred_csv: Path) -> list[float]:
     help="Soglia per classificare i prediction scores in positivi/negativi.",
 )
 def main(
-    gt_csv: Path,
+    gt_parquet: Path,
     pred_csv: Path,
     stride: int,
     out_path: Path | None,
@@ -191,7 +196,7 @@ def main(
     threshold: float,
 ) -> None:
     """Confronta temporalmente GT e prediction scores con densita diverse."""
-    gt_labels, gt_triggers_s = _load_gt_events(gt_csv)
+    gt_labels, gt_triggers_s = _load_gt_events(gt_parquet)
     gt_count = len(gt_labels)
     pred_scores = _load_prediction_scores(pred_csv)
 
