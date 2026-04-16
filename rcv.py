@@ -21,7 +21,7 @@ def signal_termination(condition: threading.Condition, terminate_event: threadin
     with condition:
         condition.notify_all()  # Wake up waiting threads so they can exit cleanly
 
-def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: threading.Condition, terminate_event: threading.Event):
+def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: threading.Condition, terminate_event: threading.Event, consumer_waiting_event: threading.Event):
     buffer = ""
     try:
         while not terminate_event.is_set():
@@ -49,13 +49,15 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                     df = pd.DataFrame(data)
                     #print("received df:\n",df)
                     with condition:
+                        if consumer_waiting_event.is_set():
+                            print("-")
                         pack_queue.append(df)
                         if len(pack_queue) >= pack_size:
                             condition.notify_all()  # Notify the consumer that a pack is ready
     finally:
         signal_termination(condition, terminate_event)
 
-def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path):
+def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path, consumer_waiting_event: threading.Event):
     snap = loadSnapshot(snapshot_path)
     gc = GraphOnlineCreator(frames_num=pack_size, m_radius=25, active_labels=None, has_label=False, norm_stats=snap['norm_stat_dict'])
     
@@ -73,7 +75,9 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
     while not terminate_event.is_set():
         with condition:
             while (len(pack_queue) < pack_size) and not terminate_event.is_set():
+                consumer_waiting_event.set()
                 condition.wait()  # Wait until enough frames are available
+            consumer_waiting_event.clear()
             if not terminate_event.is_set():
                 packDf = pd.concat(list(pack_queue)[:pack_size], keys=range(0, pack_size), names=['FrameId']).reset_index(level=0)
         if not terminate_event.is_set():
@@ -117,10 +121,11 @@ def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path, outp
     lock = threading.Lock()
     condition = threading.Condition(lock)
     terminate_event = threading.Event()
+    consumer_waiting_event = threading.Event()
 
     try:
-        t1 = threading.Thread(target=pipeout_producer, args=(fd, pack_queue, pack_size, condition, terminate_event))
-        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path, output_csv_file))
+        t1 = threading.Thread(target=pipeout_producer, args=(fd, pack_queue, pack_size, condition, terminate_event, consumer_waiting_event))
+        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path, output_csv_file, consumer_waiting_event))
         t1.start()
         t2.start()
         t1.join()
