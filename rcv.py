@@ -49,11 +49,11 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
                     df = pd.DataFrame(data)
                     #print("received df:\n",df)
                     with condition:
-                        if consumer_waiting_event.is_set():
-                            print("-")
                         pack_queue.append(df)
                         if len(pack_queue) >= pack_size:
                             condition.notify_all()  # Notify the consumer that a pack is ready
+                        elif consumer_waiting_event.is_set():
+                            print("-")
     finally:
         signal_termination(condition, terminate_event)
 
