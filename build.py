@@ -31,6 +31,7 @@ def main(data_path, radius_threshold, active_label, frames_num, map_only, map_la
     
     train_dirpath = dp / 'train'
     eval_dirpath = dp / 'eval'
+    test_dirpath = dp / 'test'
 
     click.echo(f'Building train split graphs...')
     train_builder = GraphsBuilder(
@@ -49,6 +50,16 @@ def main(data_path, radius_threshold, active_label, frames_num, map_only, map_la
         active_labels=[active_label],
     )
     eval_builder.save()
+
+    if test_dirpath.is_dir():
+        click.echo(f'Building test split graphs...')
+        test_builder = GraphsBuilder(
+            test_dirpath,
+            frames_num=frames_num,
+            m_radius=radius_threshold,
+            active_labels=[active_label],
+        )
+        test_builder.save()
 
 if __name__ == '__main__':
     main()
