@@ -14,7 +14,7 @@ from .labels import LabelsEnum as _LBEN
 
 def rescaleToCenter(x_arr:_np.ndarray,dims_arr:_np.ndarray)->_np.ndarray:
     """
-    Rescales the (X,Y) coordinates in the graph data based on the vehicle dimensions (width, length) and on the angle.
+    Rescales the (X,Y) coordinates in the graph data based on the vehicle dimensions (Width, Length) and on the angle.
     Assuming original coordinates are taken from the center of the front border of the vehicle box,
     new coordinates will be in the center of the vehicle box.
     """
@@ -37,17 +37,17 @@ def pack2graph(frames_num:int,*,vinfo_df:_pd.DataFrame,m_radius:float,active_lab
     if active_labels is None:
         active_labels = [le.value for le in _LBEN]
     
-    vinfo_df['stType'] = vinfo_df['stType'].astype('long')
+    vinfo_df['StationType'] = vinfo_df['StationType'].astype('long')
 
     t_fnames = ['X','Y','Speed','Angle','PresenceFlag']
     t_fnum = len(t_fnames)
     t_fnum_final = t_fnum + 1 # heading is encoded as sin+cos, so it adds one feature
     # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag]
 
-    st_fnames = ['width','length','stType']
+    st_fnames = ['Width','Length','StationType']
     st_fnum = len(st_fnames)
 
-    stt_fidx = t_fnum + st_fnum -1  # index of stType in total features
+    stt_fidx = t_fnum + st_fnum -1  # index of StationType in total features
 
     tot_fnames = t_fnames + st_fnames
     tot_fnum = t_fnum + st_fnum
@@ -166,9 +166,9 @@ class GraphOnlineCreator:
         self.t_fnum = len(self.t_fnames)
         self.t_fnum_final = self.t_fnum + 1 # as heading is encoded as sin+cos, it adds one feature to the original angle feature
         # final structure is [X,Y,Speed,(Angle)|(HeadingSin,HeadingCos),PresenceFlag]
-        self.st_fnames = ['width','length','stType']
+        self.st_fnames = ['Width','Length','StationType']
         self.st_fnum = len(self.st_fnames)
-        self.stt_fidx = self.t_fnum + self.st_fnum -1  # index of stType in total features
+        self.stt_fidx = self.t_fnum + self.st_fnum -1  # index of StationType in total features
         self.tot_fnames = self.t_fnames + self.st_fnames
         self.tot_fnum = self.t_fnum + self.st_fnum
 
@@ -197,9 +197,9 @@ class GraphOnlineCreator:
                         'Angle': 0.0,
                         'FrameId': mf,
                         'PresenceFlag': 0.0,
-                        'width': vg['width'].iloc[0],
-                        'length': vg['length'].iloc[0],
-                        'stType': vg['stType'].iloc[0]
+                        'Width': vg['Width'].iloc[0],
+                        'Length': vg['Length'].iloc[0],
+                        'StationType': vg['StationType'].iloc[0]
                     }])
                     new_row = new_row.astype(pack_df.dtypes.to_dict())
                     pack_df = _pd.concat([pack_df, new_row], ignore_index=True)
@@ -229,7 +229,7 @@ class GraphOnlineCreator:
         x  = _tch.tensor(x, dtype=_tch.float, device='cpu')
         xsttype = _tch.tensor(xsttype, dtype=_tch.long, device='cpu').flatten()
 
-        # remove width and length (first 2 columns) from static features
+        # remove Width and Length (first 2 columns) from static features
         xdims = xdims.reshape(xdims.shape[0], -1) if xdims.shape[0] > 0 else _np.zeros((0, self.st_fnum - 2))  # num_vehicles x num_static_features
         xdims = _tch.tensor(xdims, dtype=_tch.float, device='cpu')
         
@@ -358,31 +358,31 @@ class MapBuilder:
     
     def save(self):
         df = _pd.read_parquet(self.filepath).astype({
-            'start_x':'float32',
-            'start_y':'float32',
-            'end_x':'float32',
-            'end_y':'float32',
-            'lane_type':'uint8',
-            'speed_limit':'float32',
-            'width':'float32',
-            'can_go_left':'bool',
-            'can_go_right':'bool'
+            'StartX':'float32',
+            'StartY':'float32',
+            'EndX':'float32',
+            'EndY':'float32',
+            'LaneType':'uint8',
+            'SpeedLimit':'float32',
+            'Width':'float32',
+            'AllowLeft':'bool',
+            'AllowRight':'bool'
         })
 
         #print(f"df:{df.head(20)}")
 
         # convert to torch tensor
         #TODO ADD EXPLICIT ORDER OF COLUMNS
-        float_features = _tch.tensor(df.drop(columns=['lane_type', 'can_go_left', 'can_go_right']).to_numpy(dtype=_np.float32), dtype=_tch.float)
-        bool_features = _tch.tensor(df[['can_go_left','can_go_right']].to_numpy(dtype=_np.bool_), dtype=_tch.bool)
-        lane_type_cats = _tch.tensor(df['lane_type'].to_numpy(dtype=_np.long), dtype=_tch.long)
+        float_features = _tch.tensor(df.drop(columns=['LaneType', 'AllowLeft', 'AllowRight']).to_numpy(dtype=_np.float32), dtype=_tch.float)
+        bool_features = _tch.tensor(df[['AllowLeft','AllowRight']].to_numpy(dtype=_np.bool_), dtype=_tch.bool)
+        lane_type_cats = _tch.tensor(df['LaneType'].to_numpy(dtype=_np.long), dtype=_tch.long)
 
         # compute centroids
-        start_coords = float_features[:, 0:2]  # start_x, start_y
-        end_coords = float_features[:, 2:4]    # end_x, end_y
-        cgl = bool_features[:, 0:1]  # can_go_left
-        cgr = bool_features[:, 1:2]  # can_go_right
-        widths = float_features[:, 5:6]  # width
+        start_coords = float_features[:, 0:2]  # StartX, StartY
+        end_coords = float_features[:, 2:4]    # EndX, EndY
+        cgl = bool_features[:, 0:1]  # AllowLeft
+        cgr = bool_features[:, 1:2]  # AllowRight
+        widths = float_features[:, 5:6]  # Width
         angles = self.segmentsAngles(start_coords,end_coords).unsqueeze(1)  # [NUM_SEGMENTS, 1]
         centroids = (start_coords + end_coords) / 2.0  # [NUM_SEGMENTS, 2]
 
@@ -471,10 +471,10 @@ class GraphsBuilder:
 
         # load vinfo df if available
         if self.vpath.exists() and self.vpath.is_file():
-            self.vinfo_df = _pd.read_parquet(self.vpath).astype({'VehicleId':'string', 'width':'float32', 'length':'float32', 'stType':'uint8'})
+            self.vinfo_df = _pd.read_parquet(self.vpath).astype({'VehicleId':'string', 'Width':'float32', 'Length':'float32', 'StationType':'uint8'})
             # set NaN w/l to 0.0
-            self.vinfo_df['width'] = self.vinfo_df['width'].fillna(0.0)
-            self.vinfo_df['length'] = self.vinfo_df['length'].fillna(0.0)
+            self.vinfo_df['Width'] = self.vinfo_df['Width'].fillna(0.0)
+            self.vinfo_df['Length'] = self.vinfo_df['Length'].fillna(0.0)
 
     def finalizepdf(self,packdf:_pd.DataFrame)->_pd.DataFrame:
         """ Pandas preprocessing that finalizes the pack DataFrame by adding missing frames, PresenceFlag, and time encoding features in order to be used for as structured tensors. """
