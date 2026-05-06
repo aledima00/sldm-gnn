@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch_geometric.transforms as T
+from matplotlib import pyplot as plt
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, roc_auc_score
 from torch_geometric.loader import DataLoader as GDL
 
@@ -42,6 +43,79 @@ def _decode_mlb(mlb_encoded: int, active_labels: list[int]) -> list[int]:
     for i, lb in enumerate(active_labels):
         out[i] = 1 if (int(mlb_encoded) & (1 << lb)) else 0
     return out
+
+
+def _plot_temporal_comparison(scores_all: np.ndarray, preds_all: np.ndarray, gt_all: np.ndarray, active_labels: list[int], threshold: float, outpath: Path):
+    num_labels = len(active_labels)
+    if num_labels == 1:
+        fig, ax = plt.subplots(figsize=(14, 5))
+        local_lb_idx = 0
+        scr = scores_all[:, local_lb_idx]
+        gt = gt_all[:, local_lb_idx]
+        pred = preds_all[:, local_lb_idx]
+        
+        x_axis = np.arange(len(scr))
+        ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.7, marker='o', markersize=3.0, markeredgewidth=0.0, label='Score')
+        
+        for idx in np.where(gt == 1)[0]:
+            ax.axvline(x=idx, color='red', alpha=0.5, linewidth=1.7, linestyle='-')
+        
+        ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9, label=f'Threshold ({threshold:g})')
+        
+        lb_name = getLbName(local_lb_idx, active_labels)
+        ax.set_title(f'Score vs Ground Truth Events — {lb_name}', loc='left')
+        ax.set_xlabel('Sample Index')
+        ax.set_ylabel('Score')
+        ax.set_ylim(bottom=-0.05, top=1.05)
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc='upper right')
+        
+        num_events = int((gt == 1).sum())
+        num_pred_positive = int((pred == 1).sum())
+        num_samples = len(scr)
+        accuracy = float((pred == gt).mean())
+        
+        info_text = (
+            f"Samples: {num_samples} | GT events: {num_events} | "
+            f"Pred +: {num_pred_positive} | Threshold: {threshold:g} | "
+            f"Accuracy: {accuracy:.4f}"
+        )
+        ax.text(0.99, 1.07, info_text, transform=ax.transAxes, fontsize=9, color='#444444', va='bottom', ha='right')
+        
+        plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.92])
+        plot_path = outpath / f'test_temporal_plot_{getLbName(local_lb_idx, active_labels).lower()}.png'
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+    else:
+        fig, axes = plt.subplots(num_labels, 1, figsize=(14, 4 * num_labels))
+        if num_labels == 1:
+            axes = [axes]
+        
+        for local_lb_idx, ax in enumerate(axes):
+            scr = scores_all[:, local_lb_idx]
+            gt = gt_all[:, local_lb_idx]
+            pred = preds_all[:, local_lb_idx]
+            
+            x_axis = np.arange(len(scr))
+            ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.7, marker='o', markersize=3.0, markeredgewidth=0.0, label='Score')
+            
+            for idx in np.where(gt == 1)[0]:
+                ax.axvline(x=idx, color='red', alpha=0.5, linewidth=1.7, linestyle='-')
+            
+            ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9, label=f'Threshold ({threshold:g})')
+            
+            lb_name = getLbName(local_lb_idx, active_labels)
+            ax.set_title(f'Score vs Ground Truth Events — {lb_name}', loc='left')
+            ax.set_xlabel('Sample Index')
+            ax.set_ylabel('Score')
+            ax.set_ylim(bottom=-0.05, top=1.05)
+            ax.grid(True, alpha=0.25)
+            ax.legend(loc='upper right')
+        
+        plt.tight_layout()
+        plot_path = outpath / 'test_temporal_plots.png'
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
 
 
 def _load_snapshot(weights_path: Path, device: str) -> dict:
@@ -228,10 +302,13 @@ def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, thre
     details_df.to_csv(details_path, index=False)
     metrics_df.to_csv(metrics_path, index=False)
 
+    _plot_temporal_comparison(scores_all, preds_all, gt_all, active_labels, threshold, outpath)
+
     overall_accuracy = float((preds_all == gt_all).mean())
     click.echo(f"Overall multilabel accuracy: {overall_accuracy:.4f}")
     click.echo(f"Saved detailed predictions vs gt: {details_path}")
     click.echo(f"Saved metrics summary: {metrics_path}")
+    click.echo(f"Saved temporal plot(s) to {outpath}")
 
 
 if __name__ == '__main__':
