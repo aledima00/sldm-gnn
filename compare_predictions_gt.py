@@ -298,7 +298,7 @@ def _plot_online_comparison(pred_times_s, pred_scores, gt_labels, gt_triggers_s,
               help="Compute event-level clustering metrics (FAR/h, event precision).")
 @click.option("--threshold-sweep", is_flag=True, default=False,
               help="Sweep thresholds and report event-level trade-off table + CSV.")
-@click.option("--sim-duration", type=int, default=600, show_default=True,
+@click.option("--sim-duration", type=int, default=60, show_default=True,
               help="Simulation duration in seconds (for FAR/h computation).")
 @click.option("--active-label", type=int, default=None,
               help="Active label index to extract from MLBEncoded bitmask (e.g. 2 for TURN).")

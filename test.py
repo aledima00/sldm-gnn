@@ -338,7 +338,7 @@ def _load_gt_from_labels_parquet(labels_path: Path, pack_ids: list[int], active_
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number (as in training).')
 @click.option('-e', '--event-metrics', is_flag=True, default=False, help='Compute event-level clustering metrics (FAR/h, event precision).')
 @click.option('--threshold-sweep', is_flag=True, default=False, help='Sweep thresholds and report event-level trade-off table + CSV.')
-@click.option('--sim-duration', type=int, default=600, show_default=True, help='Simulation duration in seconds (for FAR/h computation).')
+@click.option('--sim-duration', type=int, default=60, show_default=True, help='Simulation duration in seconds (for FAR/h computation).')
 @click.option('--calibrate-priors', is_flag=True, default=False, help='Apply Bayes prior-shift calibration using --train-metadata and test metadata.')
 @click.option('--train-metadata', 'train_metadata_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path), default=None, help='Path to train/.graphs/metadata.json for prior-shift calibration.')
 def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, threshold: float,
