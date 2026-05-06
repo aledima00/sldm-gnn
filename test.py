@@ -173,43 +173,81 @@ def _decode_mlb(mlb_encoded: int, active_labels: list[int]) -> list[int]:
     return out
 
 
-def _plot_temporal_comparison(scores_all: np.ndarray, preds_all: np.ndarray, gt_all: np.ndarray, active_labels: list[int], threshold: float, outpath: Path):
+def _plot_temporal_comparison(scores_all: np.ndarray, preds_all: np.ndarray, gt_all: np.ndarray,
+                              active_labels: list[int], threshold: float, outpath: Path,
+                              event_clusters: list[np.ndarray] | None = None,
+                              matched_indices: set | None = None):
     num_labels = len(active_labels)
     if num_labels == 1:
-        fig, ax = plt.subplots(figsize=(14, 5))
+        fig, (ax, ax_detail) = plt.subplots(2, 1, figsize=(16, 8),
+                                             gridspec_kw={'height_ratios': [3, 1]})
         local_lb_idx = 0
         scr = scores_all[:, local_lb_idx]
         gt = gt_all[:, local_lb_idx]
         pred = preds_all[:, local_lb_idx]
-        
+
         x_axis = np.arange(len(scr))
-        ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.7, marker='o', markersize=3.0, markeredgewidth=0.0, label='Score')
-        
+        ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.2, alpha=0.85, label='Score')
+
         for idx in np.where(gt == 1)[0]:
-            ax.axvline(x=idx, color='red', alpha=0.5, linewidth=1.7, linestyle='-')
-        
-        ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9, label=f'Threshold ({threshold:g})')
-        
+            ax.axvline(x=idx, color='red', alpha=0.4, linewidth=1.7, linestyle='-')
+
+        ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9,
+                    label=f'Threshold ({threshold:g})')
+
+        if event_clusters is not None and matched_indices is not None:
+            for ci, pc in enumerate(event_clusters):
+                color = '#22aa44' if ci in matched_indices else '#dd6622'
+                alpha = 0.18 if ci in matched_indices else 0.10
+                ax.axvspan(pc[0], pc[-1], alpha=alpha, color=color, linewidth=0)
+
         lb_name = getLbName(local_lb_idx, active_labels)
-        ax.set_title(f'Score vs Ground Truth Events — {lb_name}', loc='left')
-        ax.set_xlabel('Sample Index')
+        ax.set_title(f'Score vs Ground Truth Events — {lb_name}', loc='left',
+                      fontsize=11, fontweight='bold')
         ax.set_ylabel('Score')
         ax.set_ylim(bottom=-0.05, top=1.05)
         ax.grid(True, alpha=0.25)
-        ax.legend(loc='upper right')
-        
+
+        legend_elements = [
+            plt.Line2D([0], [0], color='#4a4abc', linewidth=1.5, label='Score'),
+            plt.Line2D([0], [0], color='red', linewidth=1.5, linestyle='-', label='GT event'),
+            plt.Line2D([0], [0], color='green', linewidth=1.5, linestyle='--', label=f'Threshold ({threshold:g})'),
+        ]
+        if event_clusters is not None:
+            legend_elements += [
+                plt.Rectangle((0, 0), 1, 1, color='#22aa44', alpha=0.25, label='Detected (TP)'),
+                plt.Rectangle((0, 0), 1, 1, color='#dd6622', alpha=0.25, label='False alarm'),
+            ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+
         num_events = int((gt == 1).sum())
         num_pred_positive = int((pred == 1).sum())
         num_samples = len(scr)
-        accuracy = float((pred == gt).mean())
-        
+
+        n_detected = len(matched_indices) if matched_indices is not None else 0
+        n_fa = (len(event_clusters) - n_detected) if event_clusters is not None else 0
         info_text = (
             f"Samples: {num_samples} | GT events: {num_events} | "
-            f"Pred +: {num_pred_positive} | Threshold: {threshold:g} | "
-            f"Accuracy: {accuracy:.4f}"
+            f"Pred +: {num_pred_positive} | Threshold: {threshold:g}"
         )
-        ax.text(0.99, 1.07, info_text, transform=ax.transAxes, fontsize=9, color='#444444', va='bottom', ha='right')
-        
+        if event_clusters is not None:
+            info_text += (
+                f"\nPrediction clusters: {len(event_clusters)} | "
+                f"Detected: {n_detected}/{num_events} | "
+                f"False alarm clusters: {n_fa}"
+            )
+        ax.text(0.99, 1.07, info_text, transform=ax.transAxes, fontsize=9,
+                color='#444444', va='bottom', ha='right')
+
+        ax_detail.bar(x_axis, pred, color=['#22aa44' if gt[i] else '#dd6622' for i in range(len(pred))],
+                      width=1.0, linewidth=0)
+        ax_detail.set_xlabel('Sample Index')
+        ax_detail.set_ylabel('Prediction')
+        ax_detail.set_yticks([0, 1])
+        ax_detail.set_yticklabels(['0', '1'])
+        ax_detail.set_ylim(bottom=-0.1, top=1.1)
+        ax_detail.grid(True, alpha=0.15, axis='y')
+
         plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.92])
         plot_path = outpath / f'test_temporal_plot_{getLbName(local_lb_idx, active_labels).lower()}.png'
         fig.savefig(plot_path, dpi=150)
@@ -218,20 +256,21 @@ def _plot_temporal_comparison(scores_all: np.ndarray, preds_all: np.ndarray, gt_
         fig, axes = plt.subplots(num_labels, 1, figsize=(14, 4 * num_labels))
         if num_labels == 1:
             axes = [axes]
-        
+
         for local_lb_idx, ax in enumerate(axes):
             scr = scores_all[:, local_lb_idx]
             gt = gt_all[:, local_lb_idx]
-            pred = preds_all[:, local_lb_idx]
-            
+
             x_axis = np.arange(len(scr))
-            ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.7, marker='o', markersize=3.0, markeredgewidth=0.0, label='Score')
-            
+            ax.plot(x_axis, scr, color='#4a4abc', linewidth=1.7, marker='o',
+                     markersize=3.0, markeredgewidth=0.0, label='Score')
+
             for idx in np.where(gt == 1)[0]:
                 ax.axvline(x=idx, color='red', alpha=0.5, linewidth=1.7, linestyle='-')
-            
-            ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9, label=f'Threshold ({threshold:g})')
-            
+
+            ax.axhline(y=threshold, color='green', linewidth=1.5, linestyle='--', alpha=0.9,
+                        label=f'Threshold ({threshold:g})')
+
             lb_name = getLbName(local_lb_idx, active_labels)
             ax.set_title(f'Score vs Ground Truth Events — {lb_name}', loc='left')
             ax.set_xlabel('Sample Index')
@@ -239,7 +278,7 @@ def _plot_temporal_comparison(scores_all: np.ndarray, preds_all: np.ndarray, gt_
             ax.set_ylim(bottom=-0.05, top=1.05)
             ax.grid(True, alpha=0.25)
             ax.legend(loc='upper right')
-        
+
         plt.tight_layout()
         plot_path = outpath / 'test_temporal_plots.png'
         fig.savefig(plot_path, dpi=150)
@@ -469,7 +508,27 @@ def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, thre
     details_df.to_csv(details_path, index=False)
     metrics_df.to_csv(metrics_path, index=False)
 
-    _plot_temporal_comparison(scores_all, preds_all, gt_all, active_labels, threshold, outpath)
+    plot_clusters = None
+    plot_matched = None
+    if event_metrics and num_labels == 1:
+        gt_evt = gt_all[:, 0].astype(np.int32)
+        prd_evt = (scores_all[:, 0] >= threshold).astype(np.int32)
+        gt_idx_evt = np.where(gt_evt == 1)[0]
+        gt_events_evt = _cluster(gt_idx_evt, gap=20)
+        prd_idx_evt = np.where(prd_evt == 1)[0]
+        pred_clusters_evt = _cluster(prd_idx_evt, gap=5)
+        matched_evt = set()
+        for ci, pc in enumerate(pred_clusters_evt):
+            pc_start, pc_end = pc[0], pc[-1]
+            for ei, ge in enumerate(gt_events_evt):
+                gs, ge_end = ge[0], ge[-1]
+                if pc_start <= ge_end + 20 and pc_end >= gs - 20:
+                    matched_evt.add(ci)
+        plot_clusters = pred_clusters_evt
+        plot_matched = matched_evt
+
+    _plot_temporal_comparison(scores_all, preds_all, gt_all, active_labels, threshold, outpath,
+                              event_clusters=plot_clusters, matched_indices=plot_matched)
 
     if threshold_sweep:
         _threshold_sweep_report(gt_all, scores_all, active_labels, outpath, sim_duration)
