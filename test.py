@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -7,7 +8,8 @@ import pandas as pd
 import torch
 import torch_geometric.transforms as T
 from matplotlib import pyplot as plt
-from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, roc_auc_score
+from sklearn.metrics import (average_precision_score, confusion_matrix,
+                             precision_recall_fscore_support, roc_auc_score)
 from torch_geometric.loader import DataLoader as GDL
 
 import src.transforms as TFs
@@ -17,6 +19,132 @@ from src.utils import MetaData, getLbName
 
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+def _cluster(idx_array: np.ndarray, gap: int) -> list[np.ndarray]:
+    if len(idx_array) == 0:
+        return []
+    clusters = [[idx_array[0]]]
+    for i in range(1, len(idx_array)):
+        if idx_array[i] - idx_array[i - 1] <= gap:
+            clusters[-1].append(idx_array[i])
+        else:
+            clusters.append([idx_array[i]])
+    return [np.array(c) for c in clusters]
+
+
+def _compute_event_metrics(gt: np.ndarray, scores: np.ndarray, threshold: float,
+                           sim_duration_s: int, outpath: Path, label_name: str):
+    preds = (scores >= threshold).astype(np.int32)
+
+    gt_idx = np.where(gt == 1)[0]
+    gt_events = _cluster(gt_idx, gap=20)
+    if not gt_events:
+        click.echo("  No GT events found, skipping event-level metrics.")
+        return
+
+    pred_idx = np.where(preds == 1)[0]
+    pred_clusters = _cluster(pred_idx, gap=5)
+
+    detected_events = set()
+    matched_clusters = set()
+    for ci, pc in enumerate(pred_clusters):
+        pc_start, pc_end = pc[0], pc[-1]
+        for ei, ge in enumerate(gt_events):
+            gs, ge_end = ge[0], ge[-1]
+            if pc_start <= ge_end + 20 and pc_end >= gs - 20:
+                detected_events.add(ei)
+                matched_clusters.add(ci)
+
+    false_alarms = len(pred_clusters) - len(matched_clusters)
+    n_detected = len(detected_events)
+    n_missed = len(gt_events) - n_detected
+    far_per_hour = false_alarms / sim_duration_s * 3600
+    event_precision = n_detected / len(pred_clusters) if len(pred_clusters) > 0 else 0.0
+
+    click.echo(f"\n  Event-Level Metrics ({label_name}, threshold={threshold:g}):")
+    click.echo(f"    GT events: {len(gt_events)}")
+    click.echo(f"    Prediction clusters: {len(pred_clusters)}")
+    click.echo(f"    Detected: {n_detected}/{len(gt_events)}")
+    click.echo(f"    Missed: {n_missed}")
+    click.echo(f"    False alarm clusters: {false_alarms}")
+    click.echo(f"    False alarm rate: {far_per_hour:.1f}/h")
+    click.echo(f"    Event precision: {event_precision:.3f}")
+
+    event_rows = [{
+        'LabelName': label_name,
+        'Threshold': threshold,
+        'SimDurationSeconds': sim_duration_s,
+        'GtEvents': len(gt_events),
+        'PredClusters': len(pred_clusters),
+        'DetectedEvents': n_detected,
+        'MissedEvents': n_missed,
+        'FalseAlarmClusters': false_alarms,
+        'FalseAlarmRatePerHour': far_per_hour,
+        'EventPrecision': event_precision,
+    }]
+    pd.DataFrame(event_rows).to_csv(outpath / 'test_event_metrics.csv', index=False)
+    click.echo(f"    Saved to {outpath / 'test_event_metrics.csv'}")
+
+
+def _threshold_sweep_report(gt: np.ndarray, scores: np.ndarray, active_labels: list[int],
+                            outpath: Path, sim_duration_s: int):
+    click.echo("\n  Threshold Sweep (per-label, event-level):")
+    for local_lb_idx, global_lb in enumerate(active_labels):
+        g = gt[:, local_lb_idx].astype(np.int32)
+        s = scores[:, local_lb_idx].astype(np.float32)
+        lb_name = getLbName(local_lb_idx, active_labels)
+
+        gt_idx = np.where(g == 1)[0]
+        gt_events = _cluster(gt_idx, gap=20)
+
+        rows = []
+        click.echo(f"\n  {lb_name}:")
+        click.echo(f"    {'Th':>6s}  {'Clusters':>8s}  {'Detected':>8s}  {'Missed':>6s}  "
+                    f"{'FAlarms':>7s}  {'FAR/h':>6s}  {'Prec/Ev':>8s}")
+        click.echo("    " + "-" * 68)
+
+        for th in [0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.99]:
+            preds = (s >= th).astype(np.int32)
+            pred_idx = np.where(preds == 1)[0]
+            pred_clusters = _cluster(pred_idx, gap=5)
+
+            detected = set()
+            matched = set()
+            for ci, pc in enumerate(pred_clusters):
+                pc_start, pc_end = pc[0], pc[-1]
+                for ei, ge in enumerate(gt_events):
+                    gs, ge_end = ge[0], ge[-1]
+                    if pc_start <= ge_end + 20 and pc_end >= gs - 20:
+                        detected.add(ei)
+                        matched.add(ci)
+
+            false_alarms = len(pred_clusters) - len(matched)
+            n_detected = len(detected)
+            n_missed = len(gt_events) - n_detected
+            far = false_alarms / sim_duration_s * 3600
+            prec = n_detected / len(pred_clusters) if len(pred_clusters) > 0 else 0.0
+
+            click.echo(f"    {th:6.2f}  {len(pred_clusters):8d}  {n_detected:8d}  "
+                        f"{n_missed:6d}  {false_alarms:7d}  {far:6.1f}  {prec:8.3f}")
+
+            rows.append({
+                'LabelName': lb_name, 'Threshold': th,
+                'PredClusters': len(pred_clusters), 'DetectedEvents': n_detected,
+                'MissedEvents': n_missed, 'FalseAlarmClusters': false_alarms,
+                'FARPerHour': far, 'EventPrecision': prec,
+            })
+
+        pd.DataFrame(rows).to_csv(outpath / f'test_threshold_sweep_{lb_name.lower()}.csv', index=False)
+
+
+def _apply_prior_shift(scores: np.ndarray, train_pos_frac: float,
+                       test_pos_frac: float) -> np.ndarray:
+    train_neg_frac = 1.0 - train_pos_frac
+    test_neg_frac = 1.0 - test_pos_frac
+    prior_ratio = (test_pos_frac / test_neg_frac) / (train_pos_frac / train_neg_frac)
+    calibrated = scores * prior_ratio / (scores * prior_ratio + (1.0 - scores))
+    return calibrated, prior_ratio
 
 
 def _resolve_test_split_dir(inputdir: Path) -> Path:
@@ -169,7 +297,14 @@ def _load_gt_from_labels_parquet(labels_path: Path, pack_ids: list[int], active_
 @click.option('-b', '--batch-size', 'batch_size', type=int, default=64, show_default=True, help='Batch size for test inference.')
 @click.option('--threshold', type=float, default=0.5, show_default=True, help='Threshold for binary prediction from scores.')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number (as in training).')
-def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, threshold: float, cut: int | None):
+@click.option('-e', '--event-metrics', is_flag=True, default=False, help='Compute event-level clustering metrics (FAR/h, event precision).')
+@click.option('--threshold-sweep', is_flag=True, default=False, help='Sweep thresholds and report event-level trade-off table + CSV.')
+@click.option('--sim-duration', type=int, default=600, show_default=True, help='Simulation duration in seconds (for FAR/h computation).')
+@click.option('--calibrate-priors', is_flag=True, default=False, help='Apply Bayes prior-shift calibration using --train-metadata and test metadata.')
+@click.option('--train-metadata', 'train_metadata_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path), default=None, help='Path to train/.graphs/metadata.json for prior-shift calibration.')
+def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, threshold: float,
+         cut: int | None, event_metrics: bool, threshold_sweep: bool, sim_duration: int,
+         calibrate_priors: bool, train_metadata_path: Path | None):
     if not (0.0 <= threshold <= 1.0):
         raise click.ClickException("--threshold deve essere compreso tra 0.0 e 1.0")
 
@@ -247,6 +382,27 @@ def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, thre
     else:
         gt_all = _load_gt_from_labels_parquet(split_dir / 'labels.parquet', pack_ids, active_labels)
 
+    if calibrate_priors:
+        if train_metadata_path is None:
+            raise click.ClickException(
+                "--calibrate-priors requires --train-metadata PATH to train/.graphs/metadata.json"
+            )
+        train_meta = MetaData.loadJson(train_metadata_path)
+
+        test_pos = int((gt_all[:, 0] == 1).sum())
+        test_neg = int((gt_all[:, 0] == 0).sum())
+        train_pos_frac = train_meta.n_positive / train_meta.n_samples
+        test_pos_frac = test_pos / (test_pos + test_neg) if (test_pos + test_neg) > 0 else 0.0
+
+        click.echo(f"Prior-shift calibration:")
+        click.echo(f"  Train P(y=1)={train_pos_frac:.4f}, Test P(y=1)={test_pos_frac:.6f}")
+        scores_calibrated, prior_ratio = _apply_prior_shift(scores_all, train_pos_frac, test_pos_frac)
+        click.echo(f"  Prior ratio: {prior_ratio:.6f}")
+        click.echo(f"  Example: raw=0.99 -> calibrated={0.99 * prior_ratio / (0.99 * prior_ratio + 0.01):.6f}")
+        scores_all = scores_calibrated
+
+    preds_all = (scores_all >= threshold).astype(np.int32)
+
     metrics_rows: list[dict] = []
     details_rows: list[dict] = []
 
@@ -277,22 +433,33 @@ def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, thre
         )
         accuracy = float((pred == gt).mean())
         roc_auc = float(roc_auc_score(gt, scr)) if np.unique(gt).size > 1 else np.nan
+        ap = float(average_precision_score(gt, scr)) if np.unique(gt).size > 1 else np.nan
 
+        lb_name = getLbName(local_lb_idx, active_labels)
         metrics_rows.append({
             'ActiveLabelIndex': local_lb_idx,
             'GlobalLabelId': global_lb,
-            'LabelName': getLbName(local_lb_idx, active_labels),
+            'LabelName': lb_name,
             'Accuracy': accuracy,
             'Precision': float(precision),
             'Recall': float(recall),
             'F1': float(f1),
             'ROCAUC': roc_auc,
+            'AveragePrecision': ap,
             'TP': int(tp),
             'TN': int(tn),
             'FP': int(fp),
             'FN': int(fn),
             'NumSamples': int(gt.shape[0]),
         })
+
+        click.echo(f"\n--- {lb_name} (label {global_lb}) ---")
+        click.echo(f"  Accuracy={accuracy:.4f}  Precision={precision:.4f}  Recall={recall:.4f}  "
+                    f"F1={f1:.4f}  ROC-AUC={roc_auc:.4f}  AvgPrecision={ap:.4f}")
+        click.echo(f"  TP={tp}  TN={tn}  FP={fp}  FN={fn}")
+
+        if event_metrics:
+            _compute_event_metrics(gt, scr, threshold, sim_duration, outpath, lb_name)
 
     details_df = pd.DataFrame(details_rows)
     metrics_df = pd.DataFrame(metrics_rows)
@@ -304,8 +471,11 @@ def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, thre
 
     _plot_temporal_comparison(scores_all, preds_all, gt_all, active_labels, threshold, outpath)
 
+    if threshold_sweep:
+        _threshold_sweep_report(gt_all, scores_all, active_labels, outpath, sim_duration)
+
     overall_accuracy = float((preds_all == gt_all).mean())
-    click.echo(f"Overall multilabel accuracy: {overall_accuracy:.4f}")
+    click.echo(f"\nOverall multilabel accuracy: {overall_accuracy:.4f}")
     click.echo(f"Saved detailed predictions vs gt: {details_path}")
     click.echo(f"Saved metrics summary: {metrics_path}")
     click.echo(f"Saved temporal plot(s) to {outpath}")
