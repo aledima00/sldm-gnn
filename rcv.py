@@ -8,7 +8,7 @@ import threading
 
 from src.models.grusage import GruSage
 from src.gbuilder import GraphOnlineCreator
-from src.utils import loadSnapshot
+from src.utils import loadSnapshot, bayesPriorShift
 import torch
 
 MAX_JSON_CHUNK_SIZE = 32 * 1024  # 32KB ~ about 300 vehicles in each frame
@@ -55,48 +55,63 @@ def pipeout_producer(fd: int, pack_queue: deque, pack_size:int,condition: thread
     finally:
         signal_termination(condition, terminate_event, "Producer thread terminating.")
 
-def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path, threshold: float):
+def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condition,stride:int, terminate_event: threading.Event, snapshot_path: Path, output_csv_file: Path, threshold: float, calibrate_priors: bool, test_prior: float|None):
     snap = loadSnapshot(snapshot_path)
     gc = GraphOnlineCreator(frames_num=pack_size, m_radius=25, active_labels=None, has_label=False, norm_stats=snap['norm_stat_dict'])
-    
-    # =============== instantiate/configure model here ===============
-    # model = Model.loadPTH("model.pth").eval()
+
+    train_prior = snap.get('train_prior')
+    if calibrate_priors:
+        if train_prior is None:
+            raise ValueError("--calibrate-priors requires train_prior in snapshot (re-train with updated main.py)")
+        if test_prior is None:
+            raise ValueError("--calibrate-priors requires --test-prior")
+        # Warm up CUDA with a dummy tensor so that the first real torch.tensor() allocation
+        # inside bayesPriorShift doesn't cause a CUDA-side fork error in the consumer thread
+        _ = torch.zeros(1, device='cuda')
+
     model = GruSage(**snap['ip_dict']).cuda().eval()
     model.load_state_dict(snap['state_dict'])
-    
-    # ...
-    # =============== end ===============
 
+    header = "PredictionLabels,Score,RawScore" if calibrate_priors else "PredictionLabels,Scores"
     with open(output_csv_file, "w") as logfile:
-        logfile.write("PredictionLabels,Scores\n")
+        logfile.write(header + "\n")
 
     while not terminate_event.is_set():
         with condition:
             while (len(pack_queue) < pack_size) and not terminate_event.is_set():
-                condition.wait()  # Wait until enough frames are available
+                condition.wait()
             if not terminate_event.is_set():
                 packDf = pd.concat(list(pack_queue)[:pack_size], keys=range(0, pack_size), names=['FrameId']).reset_index(level=0)
         if not terminate_event.is_set():
 
-            # =============== forward model here ===============
             gdata = gc(packDf).cuda()
             with open(output_csv_file, "a") as logfile:
                 if gdata.x.shape[0] != 0:
                     with torch.inference_mode():
                         out = model(gdata)
-                        scores = torch.sigmoid(out)
-                        preds = (scores >= threshold).int()
-                        print(f"prediction: {preds.item()}, score: {scores.item()}")
-                        logfile.write(f"{preds.item()},{scores.item():.6f}\n")
+                        raw_score = torch.sigmoid(out)
+
+                        if calibrate_priors:
+                            calibrated, _ = bayesPriorShift(raw_score.cpu().numpy(), train_prior, test_prior)
+                            score = torch.tensor(calibrated, device='cuda')
+                        else:
+                            score = raw_score
+
+                        preds = (score >= threshold).int()
+                        if calibrate_priors:
+                            print(f"prediction: {preds.item()}, calibrated_score: {score.item():.6f}, raw_score: {raw_score.item():.6f}")
+                            logfile.write(f"{preds.item()},{score.item():.6f},{raw_score.item():.6f}\n")
+                        else:
+                            print(f"prediction: {preds.item()}, score: {score.item():.6f}")
+                            logfile.write(f"{preds.item()},{score.item():.6f}\n")
                 else:
-                    print(".")  # No nodes in the graph, skip inference but print a dot to show we're alive
-                    logfile.write(".,.\n")
-            # =============== end ===============
-            
+                    print(".")
+                    logfile.write(".,.,.\n" if calibrate_priors else ".,.\n")
+
             with condition:
                 for _ in range(stride):
                     if pack_queue:
-                        pack_queue.popleft()  # Remove frames based on stride
+                        pack_queue.popleft()
                 #print(f"Queue size after stride: {len(pack_queue)}")
 
 @click.command()
@@ -106,8 +121,11 @@ def infer_consumer(pack_queue: deque, pack_size:int, condition: threading.Condit
 @click.option('-s','--snapshot-path', 'snapshot_path', type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, path_type=Path), required=True, help='Path to the model weights file (.pth).')
 @click.option('-O', '--output-csv-file', 'output_csv_file', type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path), default="out.csv", help='Path to the output CSV file for predictions.')
 @click.option('--threshold', type=float, default=0.5, show_default=True, help='Threshold for binary prediction from scores.')
-def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path, output_csv_file: Path, threshold: float):
-    # apre la fifo in lettura (bloccante finché un writer non si connette)
+@click.option('--calibrate-priors', is_flag=True, default=False, help='Apply Bayes prior-shift calibration. Requires train_prior in snapshot and --test-prior.')
+@click.option('--test-prior', type=float, default=None, help='Deployment P(y=1) for prior-shift calibration (e.g. 0.00356 for TURN).')
+def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path, output_csv_file: Path, threshold: float, calibrate_priors: bool, test_prior: float|None):
+    if calibrate_priors and test_prior is None:
+        raise click.ClickException("--calibrate-priors requires --test-prior (deployment P(y=1))")
     fd = os.open(fifo_path.resolve(),  os.O_RDONLY)
     pack_queue = deque()
     lock = threading.Lock()
@@ -116,7 +134,7 @@ def main(fifo_path: Path, pack_size: int, stride: int, snapshot_path: Path, outp
 
     try:
         t1 = threading.Thread(target=pipeout_producer, args=(fd, pack_queue, pack_size, condition, terminate_event))
-        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path, output_csv_file, threshold))
+        t2 = threading.Thread(target=infer_consumer, args=(pack_queue, pack_size, condition, stride, terminate_event, snapshot_path, output_csv_file, threshold, calibrate_priors, test_prior))
         t1.start()
         t2.start()
         t1.join()

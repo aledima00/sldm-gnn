@@ -29,6 +29,9 @@ GRUSAGE_PARAMS_DICT = {
     "pos_noise_std_max":[0.2],
     "pos_noise_prop_to_speed":[True],
 
+    "focal_gamma":[0.0],
+    "focal_alpha":[None],
+
     "emb_dim":[8],
     "num_possible_station_types":[256],
 
@@ -61,18 +64,11 @@ def stripnum(match:re.Match)->str:
     else:
         return f"E{sign}{num}"
 
-def getOutName(outdir:Path,mapIncluded:bool)->str:
-    #TODO: launch checks at the beginning of the main script
-    fnamebase = f"GRUSAGE_{'MAP_' if mapIncluded else ''}RUN_"
-    for i in range(1,1001):
-        fname_noext = f"{fnamebase}{i:03d}"
+def getConfigDir(outdir:Path, config_index:int, mapIncluded:bool)->Path:
+    cfg = outdir / f"config{config_index+1:02d}"
+    cfg.mkdir(parents=True, exist_ok=True)
+    return cfg
 
-        imgname = fname_noext + ".png"
-        statename = fname_noext + ".pth"
-        
-        if not (outdir / imgname).exists() and not (outdir / statename).exists():
-            return fname_noext 
-        
 def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
     """ Parameters as string for plot text box """
 
@@ -95,6 +91,12 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
 
     params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
+    FOCAL_GAMMA = combDict.get('focal_gamma')
+    if FOCAL_GAMMA and FOCAL_GAMMA > 0:
+        FOCAL_ALPHA = combDict.get('focal_alpha')
+        params += f"Loss: Focal (alpha={FOCAL_ALPHA}, gamma={FOCAL_GAMMA})\n"
+    else:
+        params += "Loss: BCEWithLogits (pos_weight=neg/pos ratio)\n"
     params += "Data Augmentation:\n"
     if combDict.get('tf_pos_noise'):
         if combDict.get('pos_noise_prop_to_speed'):
@@ -139,12 +141,11 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
 
         inpath = inputdir.resolve()
         outpath = outdir.resolve()
-        outpath.mkdir(parents=True, exist_ok=True)
 
-        # string with all params in exp format
-        outname = getOutName(outpath,mapIncluded=include_map)
-        plot_fname = outname + ".png"
-        state_fname = outname + ".pth"
+        cfgdir = getConfigDir(outpath, i, mapIncluded=include_map)
+        fbase = f"GRUSAGE_{'MAP_' if include_map else ''}"
+        plot_fname = f"{fbase}_trev_plot.png"
+        state_fname = f"{fbase}_best_state.pth"
 
         tr_gpath = inpath / 'train' / '.graphs'
         ev_gpath = inpath / 'eval' / '.graphs'
@@ -207,8 +208,8 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
             'mu': mu_sigma[0],
             'sigma': mu_sigma[1]
         }
-        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=outpath/state_fname, norm_stats_dict_for_snapshot=mu_sigma_dict)
-        plotAccuracies(tot_tracc,tot_vacc,bin_stats, outpath / plot_fname, lbnum, cut=cut, combDict=combDict)
+        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=cfgdir/state_fname, norm_stats_dict_for_snapshot=mu_sigma_dict)
+        plotAccuracies(tot_tracc,tot_vacc,bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
 
 def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
     fig, (ax_plot, ax_text) = plt.subplots(
@@ -248,6 +249,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.close(fig)
 
 def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None):
+    train_prior = train_metadata.n_positive / train_metadata.n_samples
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
@@ -256,12 +258,15 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:i
         lr=combDict.get('lr'),
         weight_decay=combDict.get('weight_decay'),
         device=DEVICE,
-        verbose=verbosity_level>=1,#TODO: implement fine-grained verbosity levels
+        verbose=verbosity_level>=1,
         progress_logging=PROGRESS_LOGGING,
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio(),
         best_state_path=best_state_outfile,
-        norm_stats_dict_for_snapshot=norm_stats_dict_for_snapshot
+        norm_stats_dict_for_snapshot=norm_stats_dict_for_snapshot,
+        train_prior=train_prior,
+        focal_alpha=combDict.get('focal_alpha'),
+        focal_gamma=combDict.get('focal_gamma')
     )
     return (tot_tracc, tot_vacc, bin_stats)
 

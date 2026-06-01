@@ -22,11 +22,13 @@ FmaskType = _Lit['x','y','pos','speed','heading','hsin','hcos']
 callTuple: _TA = _Tuple[_Callable, str]
 
 
-def saveSnapshot(model:_Grusage, path:_Path, *, norm_stats_dict:dict|None=None):
+def saveSnapshot(model:_Grusage, path:_Path, *, norm_stats_dict:dict|None=None, train_prior:float|None=None, loss_info:dict|None=None):
     snapshot_dict = {
         'state_dict': model.state_dict_no_mapenc(),
         'ip_dict': model.input_params_dict(),
-        'norm_stat_dict': norm_stats_dict
+        'norm_stat_dict': norm_stats_dict,
+        'train_prior': train_prior,
+        'loss_info': loss_info
     }
     _tch.save(snapshot_dict, path.resolve())
 
@@ -34,6 +36,8 @@ class SnapshotDict(_TypedDict):
     state_dict: dict
     ip_dict: dict
     norm_stat_dict: dict|None
+    train_prior: float|None
+    loss_info: dict|None
 
 def loadSnapshot(path:_Path)->SnapshotDict:
     pr = path.resolve()
@@ -42,7 +46,24 @@ def loadSnapshot(path:_Path)->SnapshotDict:
     assert 'state_dict' in snap and 'ip_dict' in snap, f"Snapshot file at {path} is missing required keys"
     if 'norm_stat_dict' not in snap:
         snap['norm_stat_dict'] = None
+    if 'train_prior' not in snap:
+        snap['train_prior'] = None
+    if 'loss_info' not in snap:
+        snap['loss_info'] = None
     return snap
+
+def bayesPriorShift(scores, train_prior:float, test_prior:float):
+    train_neg = 1.0 - train_prior
+    test_neg = 1.0 - test_prior
+    prior_ratio = (test_prior / test_neg) / (train_prior / train_neg)
+    return scores * prior_ratio / (scores * prior_ratio + (1.0 - scores)), prior_ratio
+
+def focal_bce_loss(logits, targets, alpha=0.75, gamma=2.0):
+    bce = _tch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    p = _tch.sigmoid(logits)
+    p_t = p * targets + (1 - p) * (1 - targets)
+    alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+    return (alpha_t * (1 - p_t) ** gamma * bce).mean()
 
 class ParamSweepContext:
 
@@ -149,17 +170,33 @@ class MetaData:
                 raise ValueError(f"Unknown selector '{selector}' for getFeaturesMask")
         return msk
 
-def getLbName(label_idx:int,active_labels)->str:
+def getLbName(lb_value)->str:
     try:
-        return _LE(active_labels[label_idx]).name
+        return _LE(lb_value).name
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None,norm_stats_dict_for_snapshot:dict|None=None):
+def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', verbose:bool=False, *, progress_logging:Progress_logging_options='clilog', active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None, norm_stats_dict_for_snapshot:dict|None=None, train_prior:float|None=None, focal_alpha:float|None=None, focal_gamma:float=0.0):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    posw = _tch.tensor(neg_over_pos_ratio, device=device)
-    criterion = _tch.nn.BCEWithLogitsLoss(pos_weight=posw)
+
+    if focal_gamma > 0:
+        if focal_alpha is None:
+            neg_frac = neg_over_pos_ratio / (1 + neg_over_pos_ratio)
+            focal_alpha = neg_frac
+        use_focal = True
+        loss_info = {'type': 'focal', 'alpha': focal_alpha, 'gamma': focal_gamma}
+    else:
+        posw = _tch.tensor(neg_over_pos_ratio, device=device)
+        criterion = _tch.nn.BCEWithLogitsLoss(pos_weight=posw)
+        use_focal = False
+        loss_info = {'type': 'BCEWithLogits', 'pos_weight': float(neg_over_pos_ratio)}
+
+    def compute_loss(logits, y):
+        if use_focal:
+            return focal_bce_loss(logits, y, alpha=focal_alpha, gamma=focal_gamma)
+        else:
+            return criterion(logits, y)
     tprint = _TabPrint(tab="   ", enabled=(progress_logging=='clilog'))
 
     act_labels_num = len(active_labels)
@@ -191,7 +228,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
                     logits = model(batch)
                     scores = _tch.sigmoid(logits)
                     y = batch.y.float().view(batch.num_graphs, act_labels_num)
-                    train_loss = criterion(logits, y)
+                    train_loss = compute_loss(logits, y)
                     train_loss.backward()
                     if i==len(train_loader)-1:
                         # model.printGradInfo()
@@ -220,7 +257,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
                 tprint(f"Per-Label Training Accuracy:")
                 with tprint.tab:
                     for i, acc in enumerate(per_label_train_acc):
-                        tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
+                        tprint(f'label "{getLbName(active_labels[i])}" -> {acc:.4f}')
 
             # ============================ Validation ============================
             tprint(f"{_Fore.YELLOW}{_Style.BRIGHT}--> Validating ...   {_Style.RESET_ALL}")
@@ -240,7 +277,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
                         logits = model(batch)
                         scores = _tch.sigmoid(logits)
                         y = batch.y.float().view(batch.num_graphs, act_labels_num)
-                        val_loss = criterion(logits, y)
+                        val_loss = compute_loss(logits, y)
                         val_total_loss += val_loss.item() * batch.num_graphs
 
                         # Accuracy con threshold 0.5
@@ -263,7 +300,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
 
             if tot_val_accuracy > best_vacc and best_state_path is not None:
                 best_vacc = tot_val_accuracy
-                saveSnapshot(model, best_state_path, norm_stats_dict=norm_stats_dict_for_snapshot)
+                saveSnapshot(model, best_state_path, norm_stats_dict=norm_stats_dict_for_snapshot, train_prior=train_prior, loss_info=loss_info)
                 tprint(f"{_Fore.GREEN}{_Style.BRIGHT}New best model saved with Validation Accuracy: {best_vacc:.4f}{_Style.RESET_ALL}")
 
             per_label_val_acc = (tot_correct.sum(dim=0).cpu().float().numpy() / tot_mlb).tolist()
@@ -291,7 +328,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
                 tprint(f"Per-Label Eval Accuracy:")
                 with tprint.tab:
                     for i, acc in enumerate(per_label_val_acc):
-                        tprint(f'label "{getLbName(i, active_labels)}" -> {acc:.4f}')
+                        tprint(f'label "{getLbName(active_labels[i])}" -> {acc:.4f}')
         pl_tracc[:,epoch] = _np.array(per_label_train_acc)
         pl_vacc[:,epoch] = _np.array(per_label_val_acc)
         tot_tracc[:,epoch] = tot_train_accuracy
