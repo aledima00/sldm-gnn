@@ -441,7 +441,7 @@ class GraphsBuilder:
     labels_df: _pd.DataFrame # dataframe of labels
     vinfo_df: _pd.DataFrame # dataframe of vehicle info
 
-    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, active_labels:list[int]=None):
+    def __init__(self,dirpath:_Path,*,frames_num:int,m_radius:float, active_labels:list[int]=None,n_threads:int=1):
 
         self.dirpath = dirpath.resolve()
         self.gpath = self.dirpath / '.graphs' # output graphs path
@@ -452,6 +452,8 @@ class GraphsBuilder:
         self.xpath = self.dirpath / 'packs.parquet'
         self.ypath = self.dirpath / 'labels.parquet'
         self.vpath = self.dirpath / 'vinfo.parquet'
+
+        self.n_threads = n_threads
 
         if active_labels is None:
             # all
@@ -550,18 +552,18 @@ class GraphsBuilder:
         Note that featues used in nodes are:
         - Temporal features per vehicle per frame (*NTF*): [X, Y, Speed, (HeadingSin, HeadingCos) | Angle, PresenceFlag]
         """
-        nprocs = _mp.cpu_count() // 2
-        print(f"Processing and Saving packs as Graphs, using {nprocs} processes...")
+
+        print(f"Processing and Saving packs as Graphs, using {self.n_threads} processes...")
 
         if self.gpath.exists():
             _rmrf(self.gpath)
         self.gpath.mkdir(parents=True, exist_ok=True)
 
         progress_queue = _Queue()
-        data_src_queue = _Queue(maxsize=nprocs * 2)
+        data_src_queue = _Queue(maxsize=self.n_threads * 2)
         processes: list[_mp.Process] = []
 
-        for i in range(nprocs):
+        for i in range(self.n_threads):
             p = _mp.Process(target=pack2graph, kwargs={
                 'frames_num': self.frames_num,
                 'vinfo_df': self.vinfo_df,
@@ -596,7 +598,7 @@ class GraphsBuilder:
         pack_dataset.close()
 
         # signal the workers to stop
-        for _ in range(nprocs):
+        for _ in range(self.n_threads):
             data_src_queue.put(None)
 
         for p in processes:

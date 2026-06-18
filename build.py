@@ -15,7 +15,8 @@ DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD = 1.0
 @click.option('--map-only', is_flag=True, default=False, help='If specified, only build the map without building graphs.')
 @click.option('--map.lat-conn.max-angle', 'map_lat_conn_max_angle', type=float, default=DEF_MAP_LAT_CONN_MAX_ANGLE, help=f'Maximum angle (in degrees) for lateral connections in the map building step (default: {DEF_MAP_LAT_CONN_MAX_ANGLE}).')
 @click.option('--map.lat-conn.proximity-threshold', 'map_lat_conn_proximity_threshold', type=float, default=DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD, help=f'Proximity threshold (in meters) for lateral connections in the map building step (default: {DEF_MAP_LAT_CONN_PROXIMITY_THRESHOLD}).')
-def main(data_path, radius_threshold, active_label, frames_num, map_only, map_lat_conn_max_angle, map_lat_conn_proximity_threshold):
+@click.option('-T', '--threads', 'n_threads', type=int, default=1, help='Number of parallel processes to use for graph building (default: 1).')
+def main(data_path, radius_threshold, active_label, frames_num, map_only, map_lat_conn_max_angle, map_lat_conn_proximity_threshold, n_threads):
     dp = Path(data_path).resolve()
     map_filepath = dp / 'vmap.parquet'
 
@@ -39,6 +40,7 @@ def main(data_path, radius_threshold, active_label, frames_num, map_only, map_la
         frames_num=frames_num,
         m_radius=radius_threshold,
         active_labels=[active_label],
+        n_threads=n_threads
     )
     train_builder.save()
 
@@ -48,6 +50,7 @@ def main(data_path, radius_threshold, active_label, frames_num, map_only, map_la
         frames_num=frames_num,
         m_radius=radius_threshold,
         active_labels=[active_label],
+        n_threads=n_threads
     )
     eval_builder.save()
 
@@ -58,6 +61,7 @@ def main(data_path, radius_threshold, active_label, frames_num, map_only, map_la
             frames_num=frames_num,
             m_radius=radius_threshold,
             active_labels=[active_label],
+            n_threads=n_threads
         )
         test_builder.save()
 
