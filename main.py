@@ -1,4 +1,5 @@
 import torch
+import torch.multiprocessing as tmp
 from torch_geometric.loader import DataLoader as GDL
 import torch_geometric.transforms as T
 from pathlib import Path
@@ -8,14 +9,14 @@ import numpy as np
 from matplotlib import pyplot as plt
 import click
 import re
+import time
+from tqdm.auto import tqdm
 
 from src.dataset import MapGraph
 from src.models.grusage import GruSage
 import src.transforms as TFs
 from src.utils import train_model, MetaData, ParamSweepContext
 colorama.init(autoreset=True)
-
-PROGRESS_LOGGING = 'clilog'  # options: 'clilog', 'tqdm', 'none'
 
 
 GRUSAGE_PARAMS_DICT = {
@@ -112,36 +113,17 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
         params += f"Best Val. ROC AUC: {best_rocauc:.4f}, @ep.{best_rocauc_idx}\n"
         
     return params
-    
-@click.command()
-@click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
-@click.argument('outdir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
-@click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
-@click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
-@click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
-def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, verbosity_level:int):
-    psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
-    tot_cmb = len(psc)
-    print(f"TOT_COMBINATIONS={tot_cmb}")
-    if not click.confirm("Do you want to proceed to train with all of the combinations?",default=True):
-        return
 
-    # find min idx for cfg dir at the moment
-    max_cur_cfgdir_idx = -1
-    if outdir.exists():
-        for subdir in outdir.iterdir():
-            if subdir.is_dir():
-                m = re.match(r'config(\d+)', subdir.name)
-                if m:
-                    idx = int(m.group(1))
-                    if idx > max_cur_cfgdir_idx:
-                        max_cur_cfgdir_idx = idx
+def train_combination(args):
+    """Worker function running a single param-sweep combination. Top-level so it is picklable by spawn."""
+    (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
+     quiet, epoch_progress_counter) = args
 
-    print(f"Existing config directories found with max index: {max_cur_cfgdir_idx}, new configs will start from index {max_cur_cfgdir_idx+1}")
-
-    for i,combDict in enumerate(psc.combinations()):
-        
-        print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}/{tot_cmb}{Style.RESET_ALL}")
+    try:
+        if not quiet:
+            print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
+        else:
+            tqdm.write(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
 
         inpath = inputdir.resolve()
         outpath = outdir.resolve()
@@ -164,19 +146,20 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
             transform.append( TFs.AddNoise(target='pos', std=posnoisestdmax if posnoiseproptospeed else posnoisestd, prop_to_speed=posnoiseproptospeed, metadata=tr_metadata) )
         if cut is not None:
             transform.append( TFs.CutFrames(cut) )
-        
         transform = T.Compose(transform)
-        
-        
-        print(f" - Using device: {DEVICE}")
+
+        if not quiet:
+            print(f" - Using device: {DEVICE}")
 
         d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
         mu_sigma = d_train.getMuSigma()
         d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
 
-        print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
-        print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
-        # create data loaders
+        if not quiet:
+            print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
+            print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
+        
+        # create dataloaders
         dl_train = GDL(d_train, batch_size=combDict.get('batch_size'), shuffle=True)
         dl_eval = GDL(d_eval, batch_size=combDict.get('batch_size'), shuffle=True)
 
@@ -184,7 +167,8 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
         if include_map:
             map_path = inpath / '.map' / 'vmap.pth'
             map_tensors = torch.load(map_path, map_location=DEVICE)
-            print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
+            if not quiet:
+                print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
         else:
             map_tensors = None
 
@@ -212,8 +196,112 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
             'mu': mu_sigma[0],
             'sigma': mu_sigma[1]
         }
-        (tot_tracc, tot_vacc, bin_stats) = runModel(model, tr_metadata, dl_train, dl_eval, verbosity_level=verbosity_level, combDict=combDict, best_state_outfile=cfgdir/state_fname, norm_stats_dict_for_snapshot=mu_sigma_dict)
-        plotAccuracies(tot_tracc,tot_vacc,bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
+        (tot_tracc, tot_vacc, bin_stats) = runModel(
+            model, tr_metadata, dl_train, dl_eval,
+            combDict=combDict,
+            best_state_outfile=cfgdir/state_fname,
+            norm_stats_dict_for_snapshot=mu_sigma_dict,
+            quiet=quiet,
+            epoch_progress_counter=epoch_progress_counter
+        )
+        plotAccuracies(tot_tracc, tot_vacc, bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
+
+        if quiet:
+            tqdm.write(f"{Fore.GREEN}Finished combination {i+1}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.GREEN}Finished combination {i+1}{Style.RESET_ALL}")
+        return (i, True, None)
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        tqdm.write(f"{Fore.RED}Combination {i+1} FAILED: {e}{Style.RESET_ALL}")
+        tqdm.write(tb)
+        return (i, False, str(e))
+
+@click.command()
+@click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
+@click.argument('outdir', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
+@click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
+@click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
+@click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
+@click.option('-T', '--threads', 'n_threads', type=int, default=1, show_default=True, help='Number of parallel worker processes for the param-sweep loop. Each process trains a combination on the GPU; keep it small to avoid CUDA OOM.')
+def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_threads:int):
+    psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
+    tot_cmb = len(psc)
+    print(f"TOT_COMBINATIONS={tot_cmb}")
+    if not click.confirm("Do you want to proceed to train with all of the combinations?",default=True):
+        return
+
+    # find min idx for cfg dir at the moment
+    max_cur_cfgdir_idx = -1
+    if outdir.exists():
+        for subdir in outdir.iterdir():
+            if subdir.is_dir():
+                m = re.match(r'config(\d+)', subdir.name)
+                if m:
+                    idx = int(m.group(1))
+                    if idx > max_cur_cfgdir_idx:
+                        max_cur_cfgdir_idx = idx
+
+    print(f"Existing config directories found with max index: {max_cur_cfgdir_idx}, new configs will start from index {max_cur_cfgdir_idx+1}")
+
+    # materialize all combinations (needed for dispatch and total-epochs computation)
+    all_combinations = list(psc.combinations())
+
+    if n_threads <= 1:
+        # ---- Sequential path (original behaviour) ----
+        for i, combDict in enumerate(all_combinations):
+            args = (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
+                    False, None)
+            train_combination(args)
+    else:
+        # ---- Parallel path: spawn processes sharing the GPU ----
+        try:
+            tmp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass
+        ctx = tmp.get_context('spawn')
+
+        # shared counter: total epochs completed across all workers
+        total_epochs = sum(int(c.get('epochs')) for c in all_combinations)
+        epoch_counter = ctx.Value('i', 0)
+
+        tasks = [
+            (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
+             True, epoch_counter)
+            for i, combDict in enumerate(all_combinations)
+        ]
+
+        print(f"{Fore.CYAN}Launching parallel training with {n_threads} workers; total epochs across all combinations: {total_epochs}{Style.RESET_ALL}")
+
+        pool = ctx.Pool(processes=n_threads)
+        result = pool.map_async(train_combination, tasks)
+
+        with tqdm(total=total_epochs, desc='Overall progress', position=0) as pbar:
+            last = 0
+            while not result.ready():
+                cur = epoch_counter.value
+                if cur != last:
+                    pbar.update(cur - last)
+                    last = cur
+                time.sleep(0.2)
+            cur = epoch_counter.value
+            if cur != last:
+                pbar.update(cur - last)
+                last = cur
+
+        try:
+            results = result.get()
+        except Exception as e:
+            print(f"{Fore.RED}Parallel pool error: {e}{Style.RESET_ALL}")
+            results = []
+
+        pool.close()
+        pool.join()
+
+        ok = sum(1 for r in results if r and r[1])
+        fail = sum(1 for r in results if r and not r[1])
+        print(f"{Fore.GREEN}Parallel training done. OK={ok}, FAILED={fail}{Style.RESET_ALL}")
 
 def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
     fig, (ax_plot, ax_text) = plt.subplots(
@@ -252,7 +340,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.savefig(outfile)
     plt.close(fig)
 
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:int,*,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None):
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None, quiet:bool=False, epoch_progress_counter=None):
     train_prior = train_metadata.n_positive / train_metadata.n_samples
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
@@ -262,15 +350,15 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, verbosity_level:i
         lr=combDict.get('lr'),
         weight_decay=combDict.get('weight_decay'),
         device=DEVICE,
-        verbose=verbosity_level>=1,
-        progress_logging=PROGRESS_LOGGING,
         active_labels=train_metadata.active_labels,
         neg_over_pos_ratio=train_metadata.getNegOverPosRatio(),
         best_state_path=best_state_outfile,
         norm_stats_dict_for_snapshot=norm_stats_dict_for_snapshot,
         train_prior=train_prior,
         focal_alpha=combDict.get('focal_alpha'),
-        focal_gamma=combDict.get('focal_gamma')
+        focal_gamma=combDict.get('focal_gamma'),
+        epoch_progress_counter=epoch_progress_counter,
+        quiet=quiet
     )
     return (tot_tracc, tot_vacc, bin_stats)
 
