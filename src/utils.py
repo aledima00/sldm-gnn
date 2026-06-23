@@ -9,7 +9,6 @@ from pathlib import Path as _Path
 import json as _json
 from sklearn.metrics import confusion_matrix as _confmat, roc_auc_score as _rocauc
 from itertools import product as _iproduct
-from multiprocessing.sharedctypes import Synchronized as _Synchronized
 
 from .labels import LabelsEnum as _LE
 from .models.grusage import GruSage as _Grusage
@@ -174,7 +173,7 @@ def getLbName(lb_value)->str:
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', *, active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None, norm_stats_dict_for_snapshot:dict|None=None, train_prior:float|None=None, focal_alpha:float|None=None, focal_gamma:float=0.0, epoch_progress_counter:_Synchronized|None=None, quiet:bool=False):
+def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', *, active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None, norm_stats_dict_for_snapshot:dict|None=None, train_prior:float|None=None, focal_alpha:float|None=None, focal_gamma:float=0.0, epoch_progress_q:_Any=None, quiet:bool=False):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -303,8 +302,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
         tot_tracc[:,epoch] = tot_train_accuracy
         tot_vacc[:,epoch] = tot_val_accuracy
 
-        if epoch_progress_counter is not None:
-            with epoch_progress_counter.get_lock():
-                epoch_progress_counter.value += 1
+        if epoch_progress_q is not None:
+            epoch_progress_q.put(1)
 
     return (pl_tracc, tot_tracc), (pl_vacc, tot_vacc), ((bin_cm_flat_values, bin_rocauc_values) if act_labels_num==1 else None)

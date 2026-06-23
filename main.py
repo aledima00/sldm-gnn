@@ -9,7 +9,6 @@ import numpy as np
 from matplotlib import pyplot as plt
 import click
 import re
-import time
 from tqdm.auto import tqdm
 
 from src.dataset import MapGraph
@@ -117,7 +116,7 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
 def train_combination(args):
     """Worker function running a single param-sweep combination. Top-level so it is picklable by spawn."""
     (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-     quiet, epoch_progress_counter) = args
+     quiet, epoch_progress_q) = args
 
     try:
         if not quiet:
@@ -202,7 +201,7 @@ def train_combination(args):
             best_state_outfile=cfgdir/state_fname,
             norm_stats_dict_for_snapshot=mu_sigma_dict,
             quiet=quiet,
-            epoch_progress_counter=epoch_progress_counter
+            epoch_progress_q=epoch_progress_q
         )
         plotAccuracies(tot_tracc, tot_vacc, bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
 
@@ -262,13 +261,18 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
             pass
         ctx = tmp.get_context('spawn')
 
-        # shared counter: total epochs completed across all workers
+        # shared counter: total epochs completed across all workers.
+        # Use a Manager proxy (picklable) instead of ctx.Value, which cannot be
+        # passed as a Pool task argument under the 'spawn' start method
+        # (Synchronized objects can only be shared via inheritance/fork).
+        mgr = ctx.Manager()
+        epoch_q = mgr.Queue()
+
         total_epochs = sum(int(c.get('epochs')) for c in all_combinations)
-        epoch_counter = ctx.Value('i', 0)
 
         tasks = [
             (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-             True, epoch_counter)
+             True, epoch_q)
             for i, combDict in enumerate(all_combinations)
         ]
 
@@ -278,17 +282,16 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
         result = pool.map_async(train_combination, tasks)
 
         with tqdm(total=total_epochs, desc='Overall progress', position=0) as pbar:
-            last = 0
-            while not result.ready():
-                cur = epoch_counter.value
-                if cur != last:
-                    pbar.update(cur - last)
-                    last = cur
-                time.sleep(0.2)
-            cur = epoch_counter.value
-            if cur != last:
-                pbar.update(cur - last)
-                last = cur
+            done = 0
+            while done < total_epochs:
+                try:
+                    epoch_q.get(timeout=0.2)
+                    done += 1
+                    pbar.update(1)
+                except Exception:
+                    # queue.Empty (timeout) — keep waiting unless pool errored out
+                    if result.ready() and not result.successful():
+                        break
 
         try:
             results = result.get()
@@ -340,7 +343,7 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     plt.savefig(outfile)
     plt.close(fig)
 
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None, quiet:bool=False, epoch_progress_counter=None):
+def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None, quiet:bool=False, epoch_progress_q=None):
     train_prior = train_metadata.n_positive / train_metadata.n_samples
     (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
         model,
@@ -357,7 +360,7 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, 
         train_prior=train_prior,
         focal_alpha=combDict.get('focal_alpha'),
         focal_gamma=combDict.get('focal_gamma'),
-        epoch_progress_counter=epoch_progress_counter,
+        epoch_progress_q=epoch_progress_q,
         quiet=quiet
     )
     return (tot_tracc, tot_vacc, bin_stats)
