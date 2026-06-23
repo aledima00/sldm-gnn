@@ -84,7 +84,7 @@ def _load_prediction_scores(pred_csv: Path, on_empty: on_empty_options = 'drop')
 @click.option("--nan-policy", type=click.Choice(["drop", "zero"], case_sensitive=False), default="zero", show_default=True, help="How to handle missing/invalid scores: drop samples or set score to 0.")
 @click.option('--gap-pred', type=int, default=5, show_default=True, help='Gap (samples) for clustering prediction indices.')
 @click.option('--gap-gt', type=int, default=20, show_default=True, help='Gap (samples) for clustering ground-truth indices.')
-@click.option('--match-tol', type=int, default=20, show_default=True, help='Tolerance (samples) when matching predicted clusters to GT events.')
+@click.option('--match-tol', type=int, default=10, show_default=True, help='Tolerance (samples) when matching predicted clusters to GT events.')
 @click.option('--on-empty',"on_empty", type=click.Choice(get_args(on_empty_options), case_sensitive=False), default='drop', show_default=True, help='How to handle empty samples (e.g. no vehicles in the map). drop: remove from scores array (may be used when we want to evaluate only on non-empty samples); zero: set score to 0 (keeps alignment with GT, may be used when we want to evaluate on all samples including empty ones).')
 def main(gt_parquet, pred_csv, threshold, outdir, event_metrics, sim_duration, active_label, calibrate_priors, train_prior, test_prior, nan_policy, gap_pred, gap_gt, match_tol, on_empty):
     """Confronta temporalmente GT e prediction scores con metriche event-level."""

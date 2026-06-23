@@ -64,8 +64,8 @@ def calib_priors(train_prior: float, test_prior: float, gt_all: np.ndarray, scor
 @click.option('--test-prior', type=float, default=None, help='Deployment P(y=1) for prior-shift calibration (computed from test data if not set).')
 @click.option('--gap-pred', type=int, default=5, show_default=True, help='Gap (samples) for clustering prediction indices.')
 @click.option('--gap-gt', type=int, default=20, show_default=True, help='Gap (samples) for clustering ground-truth indices.')
-@click.option('--match-tol', type=int, default=20, show_default=True, help='Tolerance (samples) when matching predicted clusters to GT events.')
-def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, threshold: float, cut: int | None, event_metrics: bool, sim_duration: int, calibrate_priors: bool, test_prior: float | None, gap_pred: int = 5, gap_gt: int = 20, match_tol: int = 20):
+@click.option('--match-tol', type=int, default=10, show_default=True, help='Tolerance (samples) when matching predicted clusters to GT events.')
+def main(inputdir: Path, outdir: Path, weights_path: Path, batch_size: int, threshold: float, cut: int | None, event_metrics: bool, sim_duration: int, calibrate_priors: bool, test_prior: float | None, gap_pred: int = 5, gap_gt: int = 20, match_tol: int = 10):
     ## ==================== CHECKS & SETUP ====================
     
     if not (0.0 <= threshold <= 1.0):
