@@ -126,6 +126,19 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
     if not click.confirm("Do you want to proceed to train with all of the combinations?",default=True):
         return
 
+    # find min idx for cfg dir at the moment
+    max_cur_cfgdir_idx = -1
+    if outdir.exists():
+        for subdir in outdir.iterdir():
+            if subdir.is_dir():
+                m = re.match(r'config(\d+)', subdir.name)
+                if m:
+                    idx = int(m.group(1))
+                    if idx > max_cur_cfgdir_idx:
+                        max_cur_cfgdir_idx = idx
+
+    print(f"Existing config directories found with max index: {max_cur_cfgdir_idx}, new configs will start from index {max_cur_cfgdir_idx+1}")
+
     for i,combDict in enumerate(psc.combinations()):
         
         print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}/{tot_cmb}{Style.RESET_ALL}")
@@ -133,7 +146,7 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, ve
         inpath = inputdir.resolve()
         outpath = outdir.resolve()
 
-        cfgdir = getConfigDir(outpath, i, mapIncluded=include_map)
+        cfgdir = getConfigDir(outpath, i+max_cur_cfgdir_idx, mapIncluded=include_map)
         fbase = f"GRUSAGE_{'MAP_' if include_map else ''}"
         plot_fname = f"{fbase}_trev_plot.png"
         state_fname = f"{fbase}_best_state.pth"
