@@ -56,14 +56,6 @@ GRUSAGE_PARAMS_DICT = {
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def stripnum(match:re.Match)->str:
-    sign = match.group(1).replace('+','')
-    num = match.group(2)
-    if int(num) == 0:
-        return ''
-    else:
-        return f"E{sign}{num}"
-
 def getConfigDir(outdir:Path, config_index:int, mapIncluded:bool)->Path:
     cfg = outdir / f"config{config_index+1:02d}"
     cfg.mkdir(parents=True, exist_ok=True)
@@ -127,7 +119,6 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
 @click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
 @click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
-@click.option('-v', '--verbose','verbosity_level', count=True, help='Verbosity level: -v for verbose, -vv for more verbose, -vvv for debug.')
 def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, verbosity_level:int):
     psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
     tot_cmb = len(psc)
