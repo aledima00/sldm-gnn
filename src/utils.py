@@ -116,7 +116,7 @@ def getLbName(lb_value)->str:
     except ValueError:
         return "UNKNOWN_LABEL"
 
-def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', *, active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None, norm_stats_dict_for_snapshot:dict|None=None, train_prior:float|None=None, focal_alpha:float|None=None, focal_gamma:float=0.0, epoch_progress_q:_Any=None, quiet:bool=False, epoch_callback:_Callable[[int, float], None]|None=None):
+def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=10, lr:float=1e-3, weight_decay:float=1e-5, device:str='cpu', *, active_labels, neg_over_pos_ratio:float=1.0, best_state_path:_Path|None=None, norm_stats_dict_for_snapshot:dict|None=None, train_prior:float|None=None, focal_alpha:float|None=None, focal_gamma:float=0.0, epoch_progress_q:_Any=None, quiet:bool=False, epoch_callback:_Callable[[int, float], None]|None=None, pbar_position:int|None=None, pbar_desc:str|None=None):
     model = model.to(device)
     optimizer = _tch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -151,7 +151,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
         bin_cm_flat_values = _np.zeros((4,epochs), dtype=_np.int32)  # tn,fp,fn,tp
         bin_rocauc_values = _np.zeros((1,epochs), dtype=_np.float32)
 
-    epoch_pbar = _tqdm(range(epochs), desc="Training Epochs", disable=quiet)
+    epoch_pbar = _tqdm(range(epochs), desc=(pbar_desc or "Training Epochs"), disable=quiet, position=(pbar_position or 0), leave=(pbar_position is None))
     for epoch in epoch_pbar:
         # ============================ Training ============================
         model.train()

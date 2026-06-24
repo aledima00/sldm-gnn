@@ -158,7 +158,7 @@ def _move_mu_sigma(mu_sigma, device):
 
 
 
-def build_and_train(trial: optuna.Trial, *, inputdir: Path, study_root: Path, lbnum: int, cut: int | None, include_map: bool, mu_sigma_cpu, quiet: bool, epoch_progress_q, epoch_callback) -> float:
+def build_and_train(trial: optuna.Trial, *, inputdir: Path, study_root: Path, lbnum: int, cut: int | None, include_map: bool, mu_sigma_cpu, quiet: bool, epoch_progress_q, epoch_callback, pbar_position: int | None = None, pbar_desc: str | None = None) -> float:
     """Build the model + data for one trial, train it, save plots/state, return best val accuracy."""
     combDict = suggest_params(trial)
 
@@ -233,6 +233,8 @@ def build_and_train(trial: optuna.Trial, *, inputdir: Path, study_root: Path, lb
         quiet=quiet,
         epoch_progress_q=epoch_progress_q,
         epoch_callback=epoch_callback,
+        pbar_position=pbar_position,
+        pbar_desc=pbar_desc,
     )
     plotAccuracies(tot_tracc, tot_vacc, bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
 
@@ -261,14 +263,39 @@ def _objective_factory(shared_args):
 
 
 def _worker(worker_id: int, n_trials_this_worker: int, study_name: str, storage: str, shared_args: dict):
-    """Process entrypoint: attach to the shared study and run n_trials_this_worker trials."""
+    """Process entrypoint: attach to the shared study and run n_trials_this_worker trials.
+
+    Uses study.ask()/tell() so each trial gets its own per-trial tqdm epoch bar at position=worker_id+1 (position 0 is reserved for the father's global bar).
+    """
     try:
         tmp.set_start_method('spawn', force=True)
     except RuntimeError:
         pass
     study = optuna.load_study(study_name=study_name, storage=storage)
-    objective = _objective_factory(shared_args)
-    study.optimize(objective, n_trials=n_trials_this_worker, n_jobs=1, catch=(Exception,), show_progress_bar=False)
+    for _ in range(n_trials_this_worker):
+        trial = study.ask()
+        pbar_position = worker_id + 1
+        pbar_desc = f'W{worker_id} T{trial.number}'
+
+        def epoch_callback(epoch, vacc, _trial=trial):
+            _trial.report(vacc, epoch)
+            if _trial.should_prune():
+                tqdm.write(f"{Fore.YELLOW}Trial {_trial.number} pruned at epoch {epoch+1} (vacc={vacc:.4f}){Style.RESET_ALL}")
+                raise optuna.TrialPruned()
+
+        try:
+            value = build_and_train(trial, **shared_args, epoch_callback=epoch_callback,
+                                    pbar_position=pbar_position, pbar_desc=pbar_desc)
+            study.tell(trial, value)
+        except optuna.TrialPruned:
+            last_epoch = max(trial.intermediate_values.keys()) if trial.intermediate_values else 0
+            last_val = float(trial.intermediate_values.get(last_epoch, 0.0))
+            study.tell(trial, state=optuna.trial.TrialState.PRUNED, values=[last_val])
+        except Exception as e:
+            import traceback
+            tqdm.write(f"{Fore.RED}Trial {trial.number} FAILED: {e}{Style.RESET_ALL}")
+            tqdm.write(traceback.format_exc())
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
 
 
 @click.command()
@@ -334,7 +361,7 @@ def main(inputdir: Path, outdir: Path, lbnum: int, cut: int | None, include_map:
     if n_threads <= 1:
         # ---- Sequential: run in the parent process ----
         objective = _objective_factory(shared_args)
-        with tqdm(total=n_remaining, desc='Trials') as pbar:
+        with tqdm(total=n_remaining, desc='Trials', position=0) as pbar:
             def callback(study, trial):
                 pbar.update(1)
             study.optimize(objective, n_trials=n_remaining, n_jobs=1, callbacks=[callback], catch=(Exception,), show_progress_bar=False)
@@ -358,7 +385,7 @@ def main(inputdir: Path, outdir: Path, lbnum: int, cut: int | None, include_map:
             p.start()
 
         # Father: poll the study DB and show a global progress bar over completed/pruned trials
-        with tqdm(total=n_remaining, desc='Trials') as pbar:
+        with tqdm(total=n_remaining, desc='Trials', position=0) as pbar:
             prev_done = 0
             while any(p.is_alive() for p in procs):
                 time.sleep(1.0)
@@ -433,7 +460,7 @@ def plotAccuracies(tot_tracc: np.ndarray, tot_vacc: np.ndarray, bin_stats: tuple
     fig.tight_layout()
     plt.savefig(outfile)
     plt.close(fig)
-def runModel(model, train_metadata: MetaData, dl_train, dl_eval, *, combDict: dict, best_state_outfile: Path | None = None, norm_stats_dict_for_snapshot: dict | None = None, quiet: bool = False, epoch_progress_q=None, epoch_callback=None):
+def runModel(model, train_metadata: MetaData, dl_train, dl_eval, *, combDict: dict, best_state_outfile: Path | None = None, norm_stats_dict_for_snapshot: dict | None = None, quiet: bool = False, epoch_progress_q=None, epoch_callback=None, pbar_position: int | None = None, pbar_desc: str | None = None):
     train_prior = train_metadata.n_positive / train_metadata.n_samples
     (_, tot_tracc), (_, tot_vacc), bin_stats = train_model(
         model,
@@ -453,6 +480,8 @@ def runModel(model, train_metadata: MetaData, dl_train, dl_eval, *, combDict: di
         epoch_progress_q=epoch_progress_q,
         quiet=quiet,
         epoch_callback=epoch_callback,
+        pbar_position=pbar_position,
+        pbar_desc=pbar_desc,
     )
     return (tot_tracc, tot_vacc, bin_stats)
 
