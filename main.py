@@ -129,8 +129,8 @@ def train_combination(args):
     try:
         if not quiet:
             print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
-        else:
-            tqdm.write(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
+        #else:
+            #tqdm.write(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
 
         inpath = inputdir.resolve()
         outpath = outdir.resolve()
