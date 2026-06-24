@@ -113,10 +113,18 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
         
     return params
 
+def _move_mu_sigma(mu_sigma, device):
+    """Move a (mu, sigma) tuple of dicts to the given device."""
+    mu, sigma = mu_sigma
+    return (
+        {k: v.to(device) for k, v in mu.items()},
+        {k: v.to(device) for k, v in sigma.items()},
+    )
+
 def train_combination(args):
     """Worker function running a single param-sweep combination. Top-level so it is picklable by spawn."""
     (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-     quiet, epoch_progress_q) = args
+     mu_sigma_cpu, quiet, epoch_progress_q) = args
 
     try:
         if not quiet:
@@ -150,8 +158,8 @@ def train_combination(args):
         if not quiet:
             print(f" - Using device: {DEVICE}")
 
-        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata)
-        mu_sigma = d_train.getMuSigma()
+        mu_sigma = _move_mu_sigma(mu_sigma_cpu, DEVICE)
+        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata, zscore_mu_sigma=mu_sigma)
         d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
 
         if not quiet:
@@ -192,8 +200,8 @@ def train_combination(args):
         )
 
         mu_sigma_dict = {
-            'mu': mu_sigma[0],
-            'sigma': mu_sigma[1]
+            'mu': mu_sigma_cpu[0],
+            'sigma': mu_sigma_cpu[1]
         }
         (tot_tracc, tot_vacc, bin_stats) = runModel(
             model, tr_metadata, dl_train, dl_eval,
@@ -247,11 +255,27 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
     # materialize all combinations (needed for dispatch and total-epochs computation)
     all_combinations = list(psc.combinations())
 
+    # Precompute z-score (mu, sigma) once on the parent. Compute on GPU for
+    # speed, then move to CPU so the tensors can be passed to spawn workers
+    # (and reused by both d_train and d_eval in each worker). computeMuSigma
+    # uses raw data (transforms disabled), so it is independent of the swept
+    # params.
+    inpath = inputdir.resolve()
+    tr_gpath = inpath / 'train' / '.graphs'
+    tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
+    print(f"{Fore.CYAN}Precomputing dataset mu/sigma on {DEVICE} (shared across all combinations){Style.RESET_ALL}")
+    _tmp_ds = MapGraph(tr_gpath, device=DEVICE, transform=None, normalizeZScore=True, metadata=tr_metadata)
+    mu_sigma_gpu = _tmp_ds.getMuSigma()
+    mu_sigma_cpu = _move_mu_sigma(mu_sigma_gpu, 'cpu')
+    del _tmp_ds
+    if DEVICE == 'cuda':
+        torch.cuda.empty_cache()
+
     if n_threads <= 1:
         # ---- Sequential path (original behaviour) ----
         for i, combDict in enumerate(all_combinations):
             args = (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-                    False, None)
+                    mu_sigma_cpu, False, None)
             train_combination(args)
     else:
         # ---- Parallel path: spawn processes sharing the GPU ----
@@ -272,7 +296,7 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
 
         tasks = [
             (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-             True, epoch_q)
+             mu_sigma_cpu, True, epoch_q)
             for i, combDict in enumerate(all_combinations)
         ]
 
