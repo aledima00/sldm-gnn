@@ -81,7 +81,6 @@ def suggest_params(trial: optuna.Trial) -> dict:
 
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"{Fore.CYAN}Using device: {DEVICE}{Style.RESET_ALL}")
 
 def getConfigDir(study_root: Path, config_index: int) -> Path:
     cfg = study_root / f"config{config_index:02d}"
@@ -308,6 +307,7 @@ def _worker(worker_id: int, n_trials_this_worker: int, study_name: str, storage:
 @click.option('-T', '--threads', 'n_threads', type=int, default=1, show_default=True, help='Number of parallel worker processes. Each runs Optuna trials on the GPU; keep small to avoid CUDA OOM.')
 @click.option('--study-name', 'study_name', type=str, default=None, help='Optuna study name. Defaults to "sweep_<outdir name>".')
 def main(inputdir: Path, outdir: Path, lbnum: int, cut: int | None, include_map: bool, n_trials: int, n_threads: int, study_name: str | None):
+    print(f"{Fore.CYAN}Using device: {DEVICE}{Style.RESET_ALL}")
     outdir.mkdir(parents=True, exist_ok=True)
     if study_name is None:
         ts = datetime.now().strftime('%Y%m%d-%H%M')
