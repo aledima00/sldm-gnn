@@ -1,5 +1,8 @@
 import torch
 import torch.multiprocessing as tmp
+import optuna
+import traceback
+from optuna.trial import TrialState
 from torch_geometric.loader import DataLoader as GDL
 import torch_geometric.transforms as T
 from pathlib import Path
@@ -9,61 +12,85 @@ import numpy as np
 from matplotlib import pyplot as plt
 import click
 import re
+import time
+from datetime import datetime
 from tqdm.auto import tqdm
 
 from src.dataset import MapGraph
 from src.models.grusage import GruSage
 import src.transforms as TFs
-from src.utils import train_model, MetaData, ParamSweepContext
+from src.utils import train_model, MetaData
 colorama.init(autoreset=True)
 
+EPOCHS=100
+EMB_DIM=8
+NUM_POSSIBLE_STATION_TYPES=256
 
-GRUSAGE_PARAMS_DICT = {
-    "epochs":[200],
-    "batch_size":[32],
-    "lr":[1e-3],
-    "weight_decay":[5e-5],
+def suggest_params(trial: optuna.Trial) -> dict:
+    """Define-by-run suggestion of the model/training hyperparameters."""
+    combDict = {}
 
-    "tf_pos_noise":[True],
-    "pos_noise_std":[0.2],
-    "pos_noise_std_max":[0.2],
-    "pos_noise_prop_to_speed":[True],
+    # ---- Training params ----
+    combDict['epochs'] = EPOCHS
+    combDict['batch_size'] = trial.suggest_categorical('batch_size', [16, 32, 64])
+    combDict['lr'] = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+    combDict['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
 
-    "focal_gamma":[0.0],
-    "focal_alpha":[None],
+    # ---- Data augmentation ----
+    combDict['tf_pos_noise'] = trial.suggest_categorical('tf_pos_noise', [True, False])
+    if combDict['tf_pos_noise']:
+        combDict['pos_noise_prop_to_speed'] = trial.suggest_categorical('pos_noise_prop_to_speed', [True, False])
+        if combDict['pos_noise_prop_to_speed']:
+            combDict['pos_noise_std_max'] = trial.suggest_float('pos_noise_std_max', 0.05, 0.5)
+            combDict['pos_noise_std'] = 0.2  # unused but kept for getParams compatibility
+        else:
+            combDict['pos_noise_std'] = trial.suggest_float('pos_noise_std', 0.05, 0.5)
+            combDict['pos_noise_std_max'] = 0.2  # unused
 
-    "emb_dim":[8],
-    "num_possible_station_types":[256],
+    # ---- Loss ----
+    combDict['focal_gamma'] = trial.suggest_categorical('focal_gamma', [0.0, 1.0, 2.0])
+    if combDict['focal_gamma'] > 0:
+        combDict['focal_alpha'] = trial.suggest_categorical('focal_alpha', [None, 0.25, 0.5, 0.75])
+    else:
+        combDict['focal_alpha'] = None
 
-    "gs_dropout":[0.25],
-    "gs_neg_slope":[0.1],
+    # ---- Model architecture ----
+    combDict['emb_dim'] = EMB_DIM
+    combDict['num_possible_station_types'] = NUM_POSSIBLE_STATION_TYPES
 
-    "gs_hidden_size":[96],
-    "gs_gru_hidden_size":(lambda hs: hs, "gs_hidden_size"),
-    "gs_gru_num_layers":[1],
-    "gs_fc1_dims":(lambda hs: [hs],"gs_hidden_size") , #+[] #TODO:REMOVE
-    "gs_sage_hidden_dims":(lambda hs: [hs, hs],"gs_hidden_size"),
-    "gs_pooling":['double'],
-    "gs_fc2_dims":(lambda hs: [hs//3],"gs_hidden_size"),
+    combDict['gs_dropout'] = trial.suggest_float('gs_dropout', 0.0, 0.5)
+    combDict['gs_neg_slope'] = trial.suggest_float('gs_neg_slope', 0.01, 0.3)
 
-    "gs_map_hidden_size":[32],
-    "gs_mapenc_lane_embdim":(lambda mhs: mhs//4,"gs_map_hidden_size"),
-    "gs_mapenc_sage_hdims":(lambda mhs: [mhs, mhs],"gs_map_hidden_size"),
-    "gs_map_attention_topk":[5]
-}
+    gs_hidden_size = trial.suggest_int('gs_hidden_size', 32, 128, step=32)
+    combDict['gs_hidden_size'] = gs_hidden_size
+    combDict['gs_gru_hidden_size'] = gs_hidden_size
+    combDict['gs_gru_num_layers'] = trial.suggest_int('gs_gru_num_layers', 1, 3)
+    combDict['gs_fc1_dims'] = [gs_hidden_size]
+    combDict['gs_sage_hidden_dims'] = [gs_hidden_size, gs_hidden_size]
+    combDict['gs_pooling'] = trial.suggest_categorical('gs_pooling', ['double', 'mean', 'max', 'sum'])
+    combDict['gs_fc2_dims'] = [gs_hidden_size // 3]
+
+    gs_map_hidden_size = trial.suggest_int('gs_map_hidden_size', 16, 64, step=16)
+    combDict['gs_map_hidden_size'] = gs_map_hidden_size
+    combDict['gs_mapenc_lane_embdim'] = gs_map_hidden_size // 4
+    combDict['gs_mapenc_sage_hdims'] = [gs_map_hidden_size, gs_map_hidden_size]
+    combDict['gs_map_attention_topk'] = trial.suggest_int('gs_map_attention_topk', 3, 10)
+
+    return combDict
 
 
 # device
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"{Fore.CYAN}Using device: {DEVICE}{Style.RESET_ALL}")
 
-def getConfigDir(outdir:Path, config_index:int, mapIncluded:bool)->Path:
-    cfg = outdir / f"config{config_index+1:02d}"
+def getConfigDir(study_root: Path, config_index: int) -> Path:
+    cfg = study_root / f"config{config_index:02d}"
     cfg.mkdir(parents=True, exist_ok=True)
     return cfg
 
-def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,combDict:dict) -> str:
-    """ Parameters as string for plot text box """
 
+def getParams(bin_stats: tuple | None, tot_vacc: np.ndarray, cut: int | None = None, *, combDict: dict) -> str:
+    """Parameters as string for plot text box"""
     EMB_DIM = combDict.get('emb_dim')
     EPOCHS = combDict.get('epochs')
     BATCH_SIZE = combDict.get('batch_size')
@@ -79,8 +106,16 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
     GS_MELD = combDict.get('gs_mapenc_lane_embdim')
     GS_MESD = combDict.get('gs_mapenc_sage_hdims')
     GS_MAPATTENTION_TOPK = combDict.get('gs_map_attention_topk')
-    params = f"GRUSAGE model parameters:\n - Embedding size for station types: {EMB_DIM}\n - GRU: hidden size = {GS_GRU_HS}, num layers = {GS_GRU_NL}\n - FC1 dims: {GS_FC1_DIMS}\n - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n - FC2 dims: {GS_FC2_DIMS}\n - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\nMap Input processing:\n - Map Encoder: Lane emb.dim = {GS_MELD}, Sage HDims = {GS_MESD}\n - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n"
-
+    params = (f"GRUSAGE model parameters:\n"
+              f" - Embedding size for station types: {EMB_DIM}\n"
+              f" - GRU: hidden size = {GS_GRU_HS}, num layers = {GS_GRU_NL}\n"
+              f" - FC1 dims: {GS_FC1_DIMS}\n"
+              f" - SAGE hidden dims: {GS_SAGE_HIDDEN_DIMS}\n"
+              f" - FC2 dims: {GS_FC2_DIMS}\n"
+              f" - Regularization: Dropout = {GS_DROPOUT}, ReLU Neg. slope = {GS_NEGSLOPE}\n"
+              f"Map Input processing:\n"
+              f" - Map Encoder: Lane emb.dim = {GS_MELD}, Sage HDims = {GS_MESD}\n"
+              f" - Map Spatial Attn: topk = {GS_MAPATTENTION_TOPK}\n")
     params += "\n"
     params += f"Tr. Params: EP: {EPOCHS}, BS: {BATCH_SIZE}, LR: {LR}, WD: {WEIGHT_DECAY}\n"
     FOCAL_GAMMA = combDict.get('focal_gamma')
@@ -100,17 +135,16 @@ def getParams(bin_stats:tuple|None,  tot_vacc:np.ndarray, cut:int|None=None,*,co
     if cut is not None:
         params += f" - Cutting after: {cut} frames\n"
 
-    best_vacc_idx = tot_vacc[0,:].argmax()
-    best_vacc = tot_vacc[0,best_vacc_idx]
+    best_vacc_idx = tot_vacc[0, :].argmax()
+    best_vacc = tot_vacc[0, best_vacc_idx]
     params += f"\nBest Val. Acc.: {best_vacc:.4f}, @ep.{best_vacc_idx}\n"
 
     if bin_stats is not None:
         (bin_cm_flat_values, bin_rocauc_values) = bin_stats
 
-        best_rocauc_idx = bin_rocauc_values[0,:].argmax()
-        best_rocauc = bin_rocauc_values[0,best_rocauc_idx]
+        best_rocauc_idx = bin_rocauc_values[0, :].argmax()
+        best_rocauc = bin_rocauc_values[0, best_rocauc_idx]
         params += f"Best Val. ROC AUC: {best_rocauc:.4f}, @ep.{best_rocauc_idx}\n"
-        
     return params
 
 def _move_mu_sigma(mu_sigma, device):
@@ -121,109 +155,121 @@ def _move_mu_sigma(mu_sigma, device):
         {k: v.to(device) for k, v in sigma.items()},
     )
 
-def train_combination(args):
-    """Worker function running a single param-sweep combination. Top-level so it is picklable by spawn."""
-    (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-     mu_sigma_cpu, quiet, epoch_progress_q) = args
 
+
+
+def build_and_train(trial: optuna.Trial, *, inputdir: Path, study_root: Path, lbnum: int, cut: int | None, include_map: bool, mu_sigma_cpu, quiet: bool, epoch_progress_q, epoch_callback) -> float:
+    """Build the model + data for one trial, train it, save plots/state, return best val accuracy."""
+    combDict = suggest_params(trial)
+
+    inpath = inputdir.resolve()
+
+    cfgdir = getConfigDir(study_root, trial.number)
+    fbase = f"GRUSAGE_{'MAP_' if include_map else ''}"
+    plot_fname = f"{fbase}_trev_plot.png"
+    state_fname = f"{fbase}_best_state.pth"
+
+    tr_gpath = inpath / 'train' / '.graphs'
+    ev_gpath = inpath / 'eval' / '.graphs'
+    tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
+    ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
+
+    transform = []
+    if combDict.get('tf_pos_noise'):
+        posnoisestd = combDict.get('pos_noise_std')
+        posnoisestdmax = combDict.get('pos_noise_std_max')
+        posnoiseproptospeed = combDict.get('pos_noise_prop_to_speed')
+        transform.append(TFs.AddNoise(
+            target='pos',
+            std=posnoisestdmax if posnoiseproptospeed else posnoisestd,
+            prop_to_speed=posnoiseproptospeed,
+            metadata=tr_metadata,
+        ))
+    if cut is not None:
+        transform.append(TFs.CutFrames(cut))
+    transform = T.Compose(transform)
+
+    mu_sigma = _move_mu_sigma(mu_sigma_cpu, DEVICE)
+    d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata, zscore_mu_sigma=mu_sigma)
+    d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
+
+    # create dataloaders
+    dl_train = GDL(d_train, batch_size=combDict.get('batch_size'), shuffle=True)
+    dl_eval = GDL(d_eval, batch_size=combDict.get('batch_size'), shuffle=True)
+
+    # load map data if required
+    if include_map:
+        map_path = inpath / '.map' / 'vmap.pth'
+        map_tensors = torch.load(map_path, map_location=DEVICE)
+    else:
+        map_tensors = None
+
+    model = GruSage(
+        dynamic_features_num=tr_metadata.n_node_temporal_features,
+        frames_num=tr_metadata.frames_num,
+        gru_hidden_size=combDict.get('gs_gru_hidden_size'),
+        gru_num_layers=combDict.get('gs_gru_num_layers'),
+        fc1dims=combDict.get('gs_fc1_dims'),
+        sage_hidden_dims=combDict.get('gs_sage_hidden_dims'),
+        fc2dims=combDict.get('gs_fc2_dims'),
+        out_dim=len(tr_metadata.active_labels),
+        num_st_types=combDict.get('num_possible_station_types'),
+        emb_dim=combDict.get('emb_dim'),
+        dropout=combDict.get('gs_dropout'),
+        negative_slope=combDict.get('gs_neg_slope'),
+        global_pooling=combDict.get('gs_pooling'),
+        map_tensors=map_tensors,
+        mapenc_lane_embdim=combDict.get('gs_mapenc_lane_embdim'),
+        mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
+        map_attention_topk=combDict.get('gs_map_attention_topk'),
+    )
+
+    mu_sigma_dict = {'mu': mu_sigma_cpu[0], 'sigma': mu_sigma_cpu[1]}
+    (tot_tracc, tot_vacc, bin_stats) = runModel(
+        model, tr_metadata, dl_train, dl_eval,
+        combDict=combDict,
+        best_state_outfile=cfgdir / state_fname,
+        norm_stats_dict_for_snapshot=mu_sigma_dict,
+        quiet=quiet,
+        epoch_progress_q=epoch_progress_q,
+        epoch_callback=epoch_callback,
+    )
+    plotAccuracies(tot_tracc, tot_vacc, bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
+
+    best_vacc = float(tot_vacc[0, :].max())
+    return best_vacc
+
+
+def _objective_factory(shared_args):
+    """Return a closure capturing shared (read-only) args, suitable as optuna objective."""
+    def objective(trial: optuna.Trial) -> float:
+        def epoch_callback(epoch, vacc):
+            trial.report(vacc, epoch)
+            if trial.should_prune():
+                tqdm.write(f"{Fore.YELLOW}Trial {trial.number} pruned at epoch {epoch+1} (vacc={vacc:.4f}){Style.RESET_ALL}")
+                raise optuna.TrialPruned()
+
+        try:
+            return build_and_train(trial, **shared_args, epoch_callback=epoch_callback)
+        except optuna.TrialPruned:
+            raise
+        except Exception as e:
+            tqdm.write(f"{Fore.RED}Trial {trial.number} FAILED: {e}{Style.RESET_ALL}")
+            tqdm.write(traceback.format_exc())
+            raise
+    return objective
+
+
+def _worker(worker_id: int, n_trials_this_worker: int, study_name: str, storage: str, shared_args: dict):
+    """Process entrypoint: attach to the shared study and run n_trials_this_worker trials."""
     try:
-        if not quiet:
-            print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
-        #else:
-            #tqdm.write(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
+        tmp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+    study = optuna.load_study(study_name=study_name, storage=storage)
+    objective = _objective_factory(shared_args)
+    study.optimize(objective, n_trials=n_trials_this_worker, n_jobs=1, catch=(Exception,), show_progress_bar=False)
 
-        inpath = inputdir.resolve()
-        outpath = outdir.resolve()
-
-        cfgdir = getConfigDir(outpath, i+max_cur_cfgdir_idx, mapIncluded=include_map)
-        fbase = f"GRUSAGE_{'MAP_' if include_map else ''}"
-        plot_fname = f"{fbase}_trev_plot.png"
-        state_fname = f"{fbase}_best_state.pth"
-
-        tr_gpath = inpath / 'train' / '.graphs'
-        ev_gpath = inpath / 'eval' / '.graphs'
-        tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
-        ev_metadata = MetaData.loadJson(ev_gpath / 'metadata.json')
-
-        transform = []
-        if combDict.get('tf_pos_noise'):
-            posnoisestd = combDict.get('pos_noise_std')
-            posnoisestdmax = combDict.get('pos_noise_std_max')
-            posnoiseproptospeed = combDict.get('pos_noise_prop_to_speed')
-            transform.append( TFs.AddNoise(target='pos', std=posnoisestdmax if posnoiseproptospeed else posnoisestd, prop_to_speed=posnoiseproptospeed, metadata=tr_metadata) )
-        if cut is not None:
-            transform.append( TFs.CutFrames(cut) )
-        transform = T.Compose(transform)
-
-        if not quiet:
-            print(f" - Using device: {DEVICE}")
-
-        mu_sigma = _move_mu_sigma(mu_sigma_cpu, DEVICE)
-        d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata, zscore_mu_sigma=mu_sigma)
-        d_eval = MapGraph(ev_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=ev_metadata, zscore_mu_sigma=mu_sigma)
-
-        if not quiet:
-            print(f"{Style.DIM}Train set length: {len(d_train)}{Style.RESET_ALL}")
-            print(f"{Style.DIM}Validation set length: {len(d_eval)}{Style.RESET_ALL}")
-        
-        # create dataloaders
-        dl_train = GDL(d_train, batch_size=combDict.get('batch_size'), shuffle=True)
-        dl_eval = GDL(d_eval, batch_size=combDict.get('batch_size'), shuffle=True)
-
-        # load map data if required
-        if include_map:
-            map_path = inpath / '.map' / 'vmap.pth'
-            map_tensors = torch.load(map_path, map_location=DEVICE)
-            if not quiet:
-                print(f"{Style.DIM}Loaded map tensors from {map_path}{Style.RESET_ALL}")
-        else:
-            map_tensors = None
-
-        model = GruSage(
-            dynamic_features_num=tr_metadata.n_node_temporal_features,
-            frames_num=tr_metadata.frames_num,
-            gru_hidden_size=combDict.get('gs_gru_hidden_size'),
-            gru_num_layers=combDict.get('gs_gru_num_layers'),
-            fc1dims=combDict.get('gs_fc1_dims'),
-            sage_hidden_dims=combDict.get('gs_sage_hidden_dims'),
-            fc2dims=combDict.get('gs_fc2_dims'),
-            out_dim=len(tr_metadata.active_labels),
-            num_st_types=combDict.get('num_possible_station_types'),
-            emb_dim=combDict.get('emb_dim'),
-            dropout=combDict.get('gs_dropout'),
-            negative_slope=combDict.get('gs_neg_slope'),
-            global_pooling=combDict.get('gs_pooling'),
-            map_tensors=map_tensors,
-            mapenc_lane_embdim=combDict.get('gs_mapenc_lane_embdim'),
-            mapenc_sage_hdims=combDict.get('gs_mapenc_sage_hdims'),
-            map_attention_topk=combDict.get('gs_map_attention_topk')
-        )
-
-        mu_sigma_dict = {
-            'mu': mu_sigma_cpu[0],
-            'sigma': mu_sigma_cpu[1]
-        }
-        (tot_tracc, tot_vacc, bin_stats) = runModel(
-            model, tr_metadata, dl_train, dl_eval,
-            combDict=combDict,
-            best_state_outfile=cfgdir/state_fname,
-            norm_stats_dict_for_snapshot=mu_sigma_dict,
-            quiet=quiet,
-            epoch_progress_q=epoch_progress_q
-        )
-        plotAccuracies(tot_tracc, tot_vacc, bin_stats, cfgdir / plot_fname, lbnum, cut=cut, combDict=combDict)
-
-        if quiet:
-            tqdm.write(f"{Fore.GREEN}Finished combination {i+1}{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.GREEN}Finished combination {i+1}{Style.RESET_ALL}")
-        return (i, True, None)
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        tqdm.write(f"{Fore.RED}Combination {i+1} FAILED: {e}{Style.RESET_ALL}")
-        tqdm.write(tb)
-        return (i, False, str(e))
 
 @click.command()
 @click.argument('inputdir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path), required=True, nargs=1)
@@ -231,39 +277,48 @@ def train_combination(args):
 @click.option('-l', '--label-num', 'lbnum', type=int, required=True, prompt='Label number to train the model on')
 @click.option('--cut', type=int, default=None, help='If set, cuts frames after the given number, allowing prediction at earlier timesteps')
 @click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
-@click.option('-T', '--threads', 'n_threads', type=int, default=1, show_default=True, help='Number of parallel worker processes for the param-sweep loop. Each process trains a combination on the GPU; keep it small to avoid CUDA OOM.')
-def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_threads:int):
-    psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
-    tot_cmb = len(psc)
-    print(f"TOT_COMBINATIONS={tot_cmb}")
-    if not click.confirm("Do you want to proceed to train with all of the combinations?",default=True):
+@click.option('-n', '--n-trials', 'n_trials', type=int, default=32, show_default=True, help='Total number of Optuna trials to run (across all workers).')
+@click.option('-T', '--threads', 'n_threads', type=int, default=1, show_default=True, help='Number of parallel worker processes. Each runs Optuna trials on the GPU; keep small to avoid CUDA OOM.')
+@click.option('--study-name', 'study_name', type=str, default=None, help='Optuna study name. Defaults to "sweep_<outdir name>".')
+def main(inputdir: Path, outdir: Path, lbnum: int, cut: int | None, include_map: bool, n_trials: int, n_threads: int, study_name: str | None):
+    outdir.mkdir(parents=True, exist_ok=True)
+    if study_name is None:
+        ts = datetime.now().strftime('%Y%m%d-%H%M')
+        study_name = f"sweep_{outdir.name}_{ts}"
+    study_root = outdir / study_name
+    study_root.mkdir(parents=True, exist_ok=True)
+    storage = f"sqlite:///{(study_root / 'sweep.db').resolve()}"
+
+    # startup trials: unpruned first trials to create a baseline stats for pruning
+    # warmup steps: number of epochs to run before pruning is allowed
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        direction='maximize',
+        load_if_exists=True,
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=20),
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+
+    print(f"{Fore.CYAN}Optuna study: {study_name}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Storage: {storage}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Trials requested: {n_trials}, workers: {n_threads}{Style.RESET_ALL}")
+    n_existing = len([t for t in study.trials if t.state in (TrialState.COMPLETE, TrialState.PRUNED)])
+    n_remaining = max(0, n_trials - n_existing)
+    if n_existing > 0:
+        print(f"{Fore.CYAN}Found {n_existing} existing trials; {n_remaining} remaining{Style.RESET_ALL}")
+    if n_remaining == 0:
+        print(f"{Fore.GREEN}Study already reached {n_trials} trials. Nothing to do.{Style.RESET_ALL}")
+        _print_best(study)
+        return
+    if not click.confirm("Proceed?", default=True):
         return
 
-    # find min idx for cfg dir at the moment
-    max_cur_cfgdir_idx = -1
-    if outdir.exists():
-        for subdir in outdir.iterdir():
-            if subdir.is_dir():
-                m = re.match(r'config(\d+)', subdir.name)
-                if m:
-                    idx = int(m.group(1))
-                    if idx > max_cur_cfgdir_idx:
-                        max_cur_cfgdir_idx = idx
-
-    print(f"Existing config directories found with max index: {max_cur_cfgdir_idx}, new configs will start from index {max_cur_cfgdir_idx+1}")
-
-    # materialize all combinations (needed for dispatch and total-epochs computation)
-    all_combinations = list(psc.combinations())
-
-    # Precompute z-score (mu, sigma) once on the parent. Compute on GPU for
-    # speed, then move to CPU so the tensors can be passed to spawn workers
-    # (and reused by both d_train and d_eval in each worker). computeMuSigma
-    # uses raw data (transforms disabled), so it is independent of the swept
-    # params.
+    # ---- Precompute z-score (mu, sigma) once on the parent (GPU for speed, CPU for handoff) ----
     inpath = inputdir.resolve()
     tr_gpath = inpath / 'train' / '.graphs'
     tr_metadata = MetaData.loadJson(tr_gpath / 'metadata.json')
-    print(f"{Fore.CYAN}Precomputing dataset mu/sigma on {DEVICE} (shared across all combinations){Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Precomputing dataset mu/sigma on {DEVICE} (shared across all trials){Style.RESET_ALL}")
     _tmp_ds = MapGraph(tr_gpath, device=DEVICE, transform=None, normalizeZScore=True, metadata=tr_metadata)
     mu_sigma_gpu = _tmp_ds.getMuSigma()
     mu_sigma_cpu = _move_mu_sigma(mu_sigma_gpu, 'cpu')
@@ -271,88 +326,100 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
     if DEVICE == 'cuda':
         torch.cuda.empty_cache()
 
+    shared_args = dict(
+        inputdir=inputdir, study_root=study_root, lbnum=lbnum, cut=cut, include_map=include_map,
+        mu_sigma_cpu=mu_sigma_cpu, quiet=(n_threads > 1), epoch_progress_q=None,
+    )
+
     if n_threads <= 1:
-        # ---- Sequential path (original behaviour) ----
-        for i, combDict in enumerate(all_combinations):
-            args = (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-                    mu_sigma_cpu, False, None)
-            train_combination(args)
+        # ---- Sequential: run in the parent process ----
+        objective = _objective_factory(shared_args)
+        with tqdm(total=n_remaining, desc='Trials') as pbar:
+            def callback(study, trial):
+                pbar.update(1)
+            study.optimize(objective, n_trials=n_remaining, n_jobs=1, callbacks=[callback], catch=(Exception,), show_progress_bar=False)
     else:
-        # ---- Parallel path: spawn processes sharing the GPU ----
-        try:
-            tmp.set_start_method('spawn', force=True)
-        except RuntimeError:
-            pass
+        # ---- Parallel: spawn T worker processes, each consuming the shared study ----
         ctx = tmp.get_context('spawn')
+        # Distribute n_remaining trials as evenly as possible across workers
+        base = n_remaining // n_threads
+        rem = n_remaining % n_threads
+        quotas = [base + (1 if i < rem else 0) for i in range(n_threads)]
 
-        # shared counter: total epochs completed across all workers.
-        # Use a Manager proxy (picklable) instead of ctx.Value, which cannot be
-        # passed as a Pool task argument under the 'spawn' start method
-        # (Synchronized objects can only be shared via inheritance/fork).
-        mgr = ctx.Manager()
-        epoch_q = mgr.Queue()
+        procs = []
+        for wid, q in enumerate(quotas):
+            if q <= 0:
+                continue
+            p = ctx.Process(target=_worker, args=(wid, q, study_name, storage, shared_args))
+            procs.append(p)
 
-        total_epochs = sum(int(c.get('epochs')) for c in all_combinations)
+        print(f"{Fore.CYAN}Launching {len(procs)} parallel workers (quotas={quotas}){Style.RESET_ALL}")
+        for p in procs:
+            p.start()
 
-        tasks = [
-            (i, combDict, max_cur_cfgdir_idx, inputdir, outdir, lbnum, cut, include_map,
-             mu_sigma_cpu, True, epoch_q)
-            for i, combDict in enumerate(all_combinations)
-        ]
+        # Father: poll the study DB and show a global progress bar over completed/pruned trials
+        with tqdm(total=n_remaining, desc='Trials') as pbar:
+            prev_done = 0
+            while any(p.is_alive() for p in procs):
+                time.sleep(1.0)
+                # refresh from DB
+                cur_done = len([t for t in study.trials if t.state in (TrialState.COMPLETE, TrialState.PRUNED)]) - n_existing
+                if cur_done > prev_done:
+                    pbar.update(cur_done - prev_done)
+                    prev_done = cur_done
+            # final drain
+            cur_done = len([t for t in study.trials if t.state in (TrialState.COMPLETE, TrialState.PRUNED)]) - n_existing
+            if cur_done > prev_done:
+                pbar.update(cur_done - prev_done)
 
-        print(f"{Fore.CYAN}Launching parallel training with {n_threads} workers; total epochs across all combinations: {total_epochs}{Style.RESET_ALL}")
+        for p in procs:
+            p.join()
 
-        pool = ctx.Pool(processes=n_threads)
-        result = pool.map_async(train_combination, tasks)
+    print()
+    _print_best(study)
 
-        with tqdm(total=total_epochs, desc='Overall progress', position=0) as pbar:
-            done = 0
-            while done < total_epochs:
-                try:
-                    epoch_q.get(timeout=0.2)
-                    done += 1
-                    pbar.update(1)
-                except Exception:
-                    # queue.Empty (timeout) — keep waiting unless pool errored out
-                    if result.ready() and not result.successful():
-                        break
 
-        try:
-            results = result.get()
-        except Exception as e:
-            print(f"{Fore.RED}Parallel pool error: {e}{Style.RESET_ALL}")
-            results = []
+def _print_best(study: optuna.Study):
+    """Print the best trial summary."""
+    try:
+        best = study.best_trial
+    except ValueError:
+        print(f"{Fore.YELLOW}No completed trials to report.{Style.RESET_ALL}")
+        return
+    print(f"{Fore.GREEN}{Style.BRIGHT}Best trial #{best.number}: val_acc={best.value:.4f}{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}Params:{Style.RESET_ALL}")
+    for k, v in best.params.items():
+        print(f"  {k}: {v}")
+    print(f"{Fore.CYAN}Trials summary: "
+          f"COMPLETE={len([t for t in study.trials if t.state==TrialState.COMPLETE])}, "
+          f"PRUNED={len([t for t in study.trials if t.state==TrialState.PRUNED])}, "
+          f"FAIL={len([t for t in study.trials if t.state==TrialState.FAIL])}{Style.RESET_ALL}")
 
-        pool.close()
-        pool.join()
 
-        ok = sum(1 for r in results if r and r[1])
-        fail = sum(1 for r in results if r and not r[1])
-        print(f"{Fore.GREEN}Parallel training done. OK={ok}, FAILED={fail}{Style.RESET_ALL}")
 
-def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|None, outfile:Path,lbnum:int,*,cut,combDict:dict):
+def plotAccuracies(tot_tracc: np.ndarray, tot_vacc: np.ndarray, bin_stats: tuple | None, outfile: Path, lbnum: int, *, cut, combDict: dict):
     fig, (ax_plot, ax_text) = plt.subplots(
         1, 2,
-        figsize=(10,4),
+        figsize=(10, 4),
         gridspec_kw={'width_ratios': [3, 2]}
     )
     plt_yticks = np.arange(-0.1, 1.2, 0.1)
-    ax_plot.plot(tot_vacc[0,:], color='blue', label='Val. Acc.')
-    ax_plot.plot(tot_tracc[0,:], color='orange', linestyle='--', label='Tr. Acc.')
+    ax_plot.plot(tot_vacc[0, :], color='blue', label='Val. Acc.')
+    ax_plot.plot(tot_tracc[0, :], color='orange', linestyle='--', label='Tr. Acc.')
 
     if bin_stats is not None:
         (bin_cm_flat_values, bin_rocauc_values) = bin_stats
-        tn=bin_cm_flat_values[0,:]
-        fp=bin_cm_flat_values[1,:]
-        fn=bin_cm_flat_values[2,:]
-        tp=bin_cm_flat_values[3,:]
+        tn = bin_cm_flat_values[0, :]
+        fp = bin_cm_flat_values[1, :]
+        fn = bin_cm_flat_values[2, :]
+        tp = bin_cm_flat_values[3, :]
         precision = tp / (tp + fp + 1e-8)
         recall = tp / (tp + fn + 1e-8)
-        ax_plot.plot(bin_rocauc_values[0,:], color='purple', label='Val. ROC AUC')
+        ax_plot.plot(bin_rocauc_values[0, :], color='purple', label='Val. ROC AUC')
         ax_plot.plot(precision, color='green', alpha=0.2, label='Val. Precision')
         ax_plot.plot(recall, color='red', alpha=0.2, label='Val. Recall')
 
-    ax_plot.set_ylim(bottom=0,top=1)
+    ax_plot.set_ylim(bottom=0, top=1)
     ax_plot.set_yticks(plt_yticks)
     ax_plot.grid(True)
     ax_plot.legend()
@@ -366,10 +433,9 @@ def plotAccuracies(tot_tracc:np.ndarray, tot_vacc:np.ndarray, bin_stats:tuple|No
     fig.tight_layout()
     plt.savefig(outfile)
     plt.close(fig)
-
-def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, best_state_outfile:Path|None=None,norm_stats_dict_for_snapshot:dict|None=None, quiet:bool=False, epoch_progress_q=None):
+def runModel(model, train_metadata: MetaData, dl_train, dl_eval, *, combDict: dict, best_state_outfile: Path | None = None, norm_stats_dict_for_snapshot: dict | None = None, quiet: bool = False, epoch_progress_q=None, epoch_callback=None):
     train_prior = train_metadata.n_positive / train_metadata.n_samples
-    (_, tot_tracc),(_, tot_vacc), bin_stats = train_model(
+    (_, tot_tracc), (_, tot_vacc), bin_stats = train_model(
         model,
         dl_train,
         dl_eval,
@@ -385,7 +451,8 @@ def runModel(model,train_metadata:MetaData, dl_train, dl_eval, *,combDict:dict, 
         focal_alpha=combDict.get('focal_alpha'),
         focal_gamma=combDict.get('focal_gamma'),
         epoch_progress_q=epoch_progress_q,
-        quiet=quiet
+        quiet=quiet,
+        epoch_callback=epoch_callback,
     )
     return (tot_tracc, tot_vacc, bin_stats)
 
