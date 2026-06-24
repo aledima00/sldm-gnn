@@ -151,7 +151,7 @@ def train_model(model:_Grusage, train_loader:_GDL, eval_loader:_GDL, epochs:int=
         bin_cm_flat_values = _np.zeros((4,epochs), dtype=_np.int32)  # tn,fp,fn,tp
         bin_rocauc_values = _np.zeros((1,epochs), dtype=_np.float32)
 
-    epoch_pbar = _tqdm(range(epochs), desc=(pbar_desc or "Training Epochs"), disable=quiet, position=(pbar_position or 0), leave=(pbar_position is None))
+    epoch_pbar = _tqdm(range(epochs), desc=(pbar_desc or "Training Epochs"), position=(pbar_position or 0), leave=(pbar_position is None))
     for epoch in epoch_pbar:
         # ============================ Training ============================
         model.train()
