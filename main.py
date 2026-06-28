@@ -9,6 +9,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 import click
 import re
+import queue
 from tqdm.auto import tqdm
 
 from src.dataset import MapGraph
@@ -129,8 +130,6 @@ def train_combination(args):
     try:
         if not quiet:
             print(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
-        #else:
-            #tqdm.write(f"{Fore.BLACK}{Back.MAGENTA}{Style.BRIGHT}Starting training @ combination {i+1}{Style.RESET_ALL}")
 
         inpath = inputdir.resolve()
         outpath = outdir.resolve()
@@ -154,9 +153,6 @@ def train_combination(args):
         if cut is not None:
             transform.append( TFs.CutFrames(cut) )
         transform = T.Compose(transform)
-
-        if not quiet:
-            print(f" - Using device: {DEVICE}")
 
         mu_sigma = _move_mu_sigma(mu_sigma_cpu, DEVICE)
         d_train = MapGraph(tr_gpath, device=DEVICE, transform=transform, normalizeZScore=True, metadata=tr_metadata, zscore_mu_sigma=mu_sigma)
@@ -233,6 +229,7 @@ def train_combination(args):
 @click.option('--include-map', is_flag=True, default=False, help='If set, includes map information as node features (if available in dataset)')
 @click.option('-T', '--threads', 'n_threads', type=int, default=1, show_default=True, help='Number of parallel worker processes for the param-sweep loop. Each process trains a combination on the GPU; keep it small to avoid CUDA OOM.')
 def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_threads:int):
+    print(f"* Using device: {DEVICE} *")
     psc=ParamSweepContext(GRUSAGE_PARAMS_DICT)
     tot_cmb = len(psc)
     print(f"TOT_COMBINATIONS={tot_cmb}")
@@ -282,6 +279,7 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
         try:
             tmp.set_start_method('spawn', force=True)
         except RuntimeError:
+            # tmp.get_context('spawn') should work the same
             pass
         ctx = tmp.get_context('spawn')
 
@@ -309,13 +307,26 @@ def main(inputdir:Path,outdir:Path,lbnum:int, cut:int|None, include_map:bool, n_
             done = 0
             while done < total_epochs:
                 try:
-                    epoch_q.get(timeout=0.2)
+                    # polling queue
+                    epoch_q.get(timeout=0.5)
                     done += 1
                     pbar.update(1)
-                except Exception:
-                    # queue.Empty (timeout) — keep waiting unless pool errored out
-                    if result.ready() and not result.successful():
-                        break
+                except queue.Empty:
+                    # timeout: check whether the pool is done
+                    if result.ready():
+                        if not result.successful():
+                            # failed pool
+                            break
+                        else:
+                            # pool finished successfully: drain any epochs still in the queue
+                            while done < total_epochs:
+                                try:
+                                    epoch_q.get_nowait()
+                                    done += 1
+                                    pbar.update(1)
+                                except queue.Empty:
+                                    break
+                            break
 
         try:
             results = result.get()
